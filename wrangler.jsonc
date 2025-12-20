@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "saas-gemini-master", // Puedes cambiar el nombre si prefieres
+  "main": "src/index.ts",        // El punto de entrada de tu Worker (Backend)
+  "compatibility_date": "2025-02-04",
+  "observability": {
+    "enabled": true
+  },
+
+  // Vinculación de la base de datos persistente
+  "kv_namespaces": [
+    {
+      "binding": "DB_USUARIOS", // Este es el nombre que usaremos en el código (env.DB_USUARIOS)
+      "id": "21901ebf022a4ca9b59a2329bc45caa2"
+    }
+  ],
+
+  // Variables de entorno globales
+  "vars": {
+    "GEMINI_MODEL": "gemini-2.5-flash"
+  }
+}
