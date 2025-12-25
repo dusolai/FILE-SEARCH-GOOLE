@@ -7,17 +7,15 @@ import { QueryResult } from '../types';
 
 let ai: GoogleGenAI | null = null;
 
-// AHORA ACEPTA LA CLAVE COMO PARÁMETRO
 export function initialize(apiKey?: string) {
-    // 1. Intentamos usar la clave pasada
-    let keyToUse = apiKey;
+    // 1. Limpieza agresiva de la clave (quita espacios invisibles)
+    let keyToUse = apiKey ? apiKey.trim() : undefined;
     
-    // 2. Si no, miramos en localStorage
     if (!keyToUse) {
         keyToUse = localStorage.getItem('gemini_api_key') || undefined;
     }
 
-    // 3. Si no, intentamos variable de entorno (fallback)
+    // Fallback a variables de entorno
     if (!keyToUse) {
         keyToUse = import.meta.env.VITE_GOOGLE_API_KEY;
     }
@@ -27,7 +25,13 @@ export function initialize(apiKey?: string) {
         return; 
     }
 
-    ai = new GoogleGenAI({ apiKey: keyToUse });
+    try {
+        ai = new GoogleGenAI({ apiKey: keyToUse });
+        console.log("✅ Gemini Service inicializado correctamente.");
+    } catch (error) {
+        console.error("❌ Error al inicializar Gemini:", error);
+        throw error;
+    }
 }
 
 function getAiInstance() {
@@ -44,30 +48,37 @@ async function delay(ms: number): Promise<void> {
 
 export async function createRagStore(displayName: string): Promise<string> {
     const aiInstance = getAiInstance();
+    console.log(`Creando cerebro: ${displayName}...`);
     const ragStore = await aiInstance.fileSearchStores.create({ config: { displayName } });
-    if (!ragStore.name) throw new Error("Failed to create RAG store");
+    
+    if (!ragStore.name) throw new Error("Google no devolvió el ID del Store.");
+    console.log(`✅ Cerebro creado: ${ragStore.name}`);
     return ragStore.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const aiInstance = getAiInstance();
+    console.log(`Subiendo ${file.name} a ${ragStoreName}...`);
     
     let op = await aiInstance.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
     });
 
+    // Espera activa con polling
     while (!op.done) {
-        await delay(2000); // Polling cada 2s
+        await delay(2000);
         op = await aiInstance.operations.get({operation: op});
+        console.log(`Procesando ${file.name}...`);
     }
+    console.log(`✅ ${file.name} indexado correctamente.`);
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
     const aiInstance = getAiInstance();
     const response: GenerateContentResponse = await aiInstance.models.generateContent({
         model: 'gemini-1.5-flash',
-        contents: query + " Responde en español. Basa tu respuesta ESTRICTAMENTE en los documentos proporcionados.",
+        contents: query + " Responde en español. Usa STRICTAMENTE la información del contexto proporcionado.",
         config: {
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
         }
@@ -85,7 +96,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
     try {
         const response = await aiInstance.models.generateContent({
             model: 'gemini-1.5-flash',
-            contents: "Genera 4 preguntas cortas en español sobre el contenido de estos documentos. Devuelve SOLO un array JSON de strings.",
+            contents: "Genera 3 preguntas cortas y muy prácticas que un usuario podría hacerle a estos documentos. Devuelve SOLO un array JSON de strings.",
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
             }
@@ -98,7 +109,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const parsed = JSON.parse(jsonText);
         return Array.isArray(parsed) ? parsed.map(String) : [];
     } catch (error) {
-        console.error("Error generando preguntas:", error);
-        return ["¿De qué tratan estos documentos?", "¿Resumen principal?", "¿Puntos clave?", "¿Conclusiones?"];
+        console.warn("No se pudieron generar preguntas auto:", error);
+        return ["¿Qué dice el manual?", "¿Resumen principal?", "¿Pasos clave?"];
     }
 }

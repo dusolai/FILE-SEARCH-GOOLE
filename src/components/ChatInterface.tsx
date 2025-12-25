@@ -1,12 +1,8 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
-*/
-import React, { useState, useEffect, useRef } from 'react';
-import { ChatMessage } from '../types';
-import Spinner from './Spinner';
+import React, { useRef, useEffect, useState } from 'react';
 import SendIcon from './icons/SendIcon';
 import RefreshIcon from './icons/RefreshIcon';
+import Spinner from './Spinner';
+import { ChatMessage } from '../types';
 
 interface ChatInterfaceProps {
     documentName: string;
@@ -15,226 +11,141 @@ interface ChatInterfaceProps {
     onSendMessage: (message: string) => void;
     onNewChat: () => void;
     exampleQuestions: string[];
+    ragStoreId: string; // <--- NUEVO CAMPO
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ documentName, history, isQueryLoading, onSendMessage, onNewChat, exampleQuestions }) => {
-    const [query, setQuery] = useState('');
-    const [currentSuggestion, setCurrentSuggestion] = useState('');
-    const [modalContent, setModalContent] = useState<string | null>(null);
-    const chatEndRef = useRef<HTMLDivElement>(null);
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
+    documentName, 
+    history, 
+    isQueryLoading, 
+    onSendMessage, 
+    onNewChat, 
+    exampleQuestions,
+    ragStoreId 
+}) => {
+    const [inputValue, setInputValue] = useState('');
+    const [copied, setCopied] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        if (exampleQuestions.length === 0) {
-            setCurrentSuggestion('');
-            return;
-        }
-
-        setCurrentSuggestion(exampleQuestions[0]);
-        let suggestionIndex = 0;
-        const intervalId = setInterval(() => {
-            suggestionIndex = (suggestionIndex + 1) % exampleQuestions.length;
-            setCurrentSuggestion(exampleQuestions[suggestionIndex]);
-        }, 5000);
-
-        return () => clearInterval(intervalId);
-    }, [exampleQuestions]);
-    
-    const renderMarkdown = (text: string) => {
-        if (!text) return { __html: '' };
-
-        const lines = text.split('\n');
-        let html = '';
-        let listType: 'ul' | 'ol' | null = null;
-        let paraBuffer = '';
-
-        function flushPara() {
-            if (paraBuffer) {
-                html += `<p class="my-2">${paraBuffer}</p>`;
-                paraBuffer = '';
-            }
-        }
-
-        function flushList() {
-            if (listType) {
-                html += `</${listType}>`;
-                listType = null;
-            }
-        }
-
-        for (const rawLine of lines) {
-            const line = rawLine
-                .replace(/\*\*(.*?)\*\*|__(.*?)__/g, '<strong>$1$2</strong>')
-                .replace(/\*(.*?)\*|_(.*?)_/g, '<em>$1$2</em>')
-                .replace(/`([^`]+)`/g, '<code class="bg-gem-mist/50 px-1 py-0.5 rounded-sm font-mono text-sm">$1</code>');
-
-            const isOl = line.match(/^\s*\d+\.\s(.*)/);
-            const isUl = line.match(/^\s*[\*\-]\s(.*)/);
-
-            if (isOl) {
-                flushPara();
-                if (listType !== 'ol') {
-                    flushList();
-                    html += '<ol class="list-decimal list-inside my-2 pl-5 space-y-1">';
-                    listType = 'ol';
-                }
-                html += `<li>${isOl[1]}</li>`;
-            } else if (isUl) {
-                flushPara();
-                if (listType !== 'ul') {
-                    flushList();
-                    html += '<ul class="list-disc list-inside my-2 pl-5 space-y-1">';
-                    listType = 'ul';
-                }
-                html += `<li>${isUl[1]}</li>`;
-            } else {
-                flushList();
-                if (line.trim() === '') {
-                    flushPara();
-                } else {
-                    paraBuffer += (paraBuffer ? '<br/>' : '') + line;
-                }
-            }
-        }
-
-        flushPara();
-        flushList();
-
-        return { __html: html };
-    };
-
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (query.trim()) {
-            onSendMessage(query);
-            setQuery('');
-        }
-    };
-
-    const handleSourceClick = (text: string) => {
-        setModalContent(text);
-    };
-
-    const closeModal = () => {
-        setModalContent(null);
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     };
 
     useEffect(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        scrollToBottom();
     }, [history, isQueryLoading]);
 
+    const handleSend = () => {
+        if (!inputValue.trim()) return;
+        onSendMessage(inputValue);
+        setInputValue('');
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    };
+
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(ragStoreId);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
     return (
-        <div className="flex flex-col h-full relative">
-            <header className="absolute top-0 left-0 right-0 p-4 bg-gem-onyx/80 backdrop-blur-sm z-10 flex justify-between items-center border-b border-gem-mist">
-                <div className="w-full max-w-4xl mx-auto flex justify-between items-center px-4">
-                    <h1 className="text-2xl font-bold text-gem-offwhite truncate" title={`Chat with ${documentName}`}>Chat with {documentName}</h1>
-                    <button
-                        onClick={onNewChat}
-                        className="flex items-center px-4 py-2 bg-gem-blue hover:bg-blue-500 rounded-full text-white transition-colors flex-shrink-0"
-                        title="End current chat and start a new one"
-                    >
-                        <RefreshIcon />
-                        <span className="ml-2 hidden sm:inline">New Chat</span>
+        <div className="flex flex-col h-screen bg-gray-900 text-white">
+            {/* Header con ID para n8n */}
+            <header className="bg-gray-800 border-b border-gray-700 p-4 shadow-md z-10">
+                <div className="max-w-4xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
+                    <div>
+                        <h1 className="text-xl font-bold text-blue-400">{documentName}</h1>
+                        <div className="flex items-center gap-2 mt-1 text-sm bg-black/30 px-3 py-1 rounded-full border border-gray-600">
+                            <span className="text-gray-400">ID del Cerebro:</span>
+                            <code className="text-green-400 font-mono select-all">{ragStoreId}</code>
+                            <button 
+                                onClick={copyToClipboard}
+                                className="ml-2 text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-white transition-colors"
+                            >
+                                {copied ? "¡Copiado!" : "Copiar"}
+                            </button>
+                        </div>
+                    </div>
+                    <button onClick={onNewChat} className="text-gray-400 hover:text-white flex items-center gap-2 text-sm">
+                        <RefreshIcon /> Limpiar Chat
                     </button>
+                </div>
+                <div className="max-w-4xl mx-auto mt-2 text-xs text-gray-500 text-center sm:text-left">
+                    👉 <strong>Para n8n:</strong> Copia el ID verde y pégalo en tu nodo de Google Gemini o guárdalo en tu base de datos (Supabase) vinculado a tu usuario.
                 </div>
             </header>
 
-            <div className="flex-grow pt-24 pb-32 overflow-y-auto px-4">
-                <div className="w-full max-w-4xl mx-auto space-y-6">
-                    {history.map((message, index) => (
-                        <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-xl lg:max-w-2xl px-5 py-3 rounded-2xl ${
-                                message.role === 'user' 
-                                ? 'bg-gem-blue text-white' 
-                                : 'bg-gem-slate'
-                            }`}>
-                                <div dangerouslySetInnerHTML={renderMarkdown(message.parts[0].text)} />
-                                {message.role === 'model' && message.groundingChunks && message.groundingChunks.length > 0 && (
-                                    <div className="mt-4 pt-3 border-t border-gem-mist/50">
-                                        <h4 className="text-xs font-semibold text-gem-offwhite/70 mb-2 text-right">Sources:</h4>
-                                        <div className="flex flex-wrap gap-2 justify-end">
-                                            {message.groundingChunks.map((chunk, chunkIndex) => (
-                                                chunk.retrievedContext?.text && (
-                                                    <button
-                                                        key={chunkIndex}
-                                                        onClick={() => handleSourceClick(chunk.retrievedContext!.text!)}
-                                                        className="bg-gem-mist/50 hover:bg-gem-mist text-xs px-3 py-1 rounded-md transition-colors"
-                                                        aria-label={`View source ${chunkIndex + 1}`}
-                                                        title="View source document chunk"
-                                                    >
-                                                        Source {chunkIndex + 1}
-                                                    </button>
-                                                )
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                    {isQueryLoading && (
-                        <div className="flex justify-start">
-                            <div className="max-w-xl lg:max-w-2xl px-5 py-3 rounded-2xl bg-gem-slate flex items-center">
-                                <Spinner />
+            {/* Lista de Mensajes */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                <div className="max-w-3xl mx-auto space-y-6">
+                    {history.length === 0 && (
+                        <div className="text-center mt-20 opacity-50 space-y-4">
+                            <p className="text-2xl">🧠</p>
+                            <p>Tu memoria está lista. Pregunta lo que quieras.</p>
+                            <div className="grid grid-cols-1 gap-2 max-w-md mx-auto mt-8">
+                                {exampleQuestions.map((q, i) => (
+                                    <button 
+                                        key={i} 
+                                        onClick={() => onSendMessage(q)}
+                                        className="text-sm bg-gray-800 p-3 rounded-lg hover:bg-gray-700 border border-gray-700 transition-colors text-left"
+                                    >
+                                        {q}
+                                    </button>
+                                ))}
                             </div>
                         </div>
                     )}
-                    <div ref={chatEndRef} />
+                    
+                    {history.map((msg, idx) => (
+                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[85%] rounded-2xl p-4 ${
+                                msg.role === 'user' 
+                                    ? 'bg-blue-600 text-white rounded-br-none' 
+                                    : 'bg-gray-800 text-gray-100 rounded-bl-none border border-gray-700'
+                            }`}>
+                                <div className="whitespace-pre-wrap leading-relaxed">{msg.parts[0].text}</div>
+                            </div>
+                        </div>
+                    ))}
+                    
+                    {isQueryLoading && (
+                        <div className="flex justify-start">
+                            <div className="bg-gray-800 rounded-2xl rounded-bl-none p-4 border border-gray-700 flex items-center gap-3">
+                                <Spinner />
+                                <span className="text-sm text-gray-400">Pensando...</span>
+                            </div>
+                        </div>
+                    )}
+                    <div ref={messagesEndRef} />
                 </div>
             </div>
 
-            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gem-onyx/80 backdrop-blur-sm">
-                 <div className="max-w-4xl mx-auto">
-                    <div className="text-center mb-2 min-h-[3rem] flex items-center justify-center">
-                        {!isQueryLoading && currentSuggestion && (
-                            <button
-                                onClick={() => setQuery(currentSuggestion)}
-                                className="text-base text-gem-offwhite bg-gem-slate hover:bg-gem-mist transition-colors px-4 py-2 rounded-full"
-                                title="Use this suggestion as your prompt"
-                            >
-                                Try: "{currentSuggestion}"
-                            </button>
-                        )}
-                    </div>
-                     <form onSubmit={handleSubmit} className="flex items-center space-x-3">
-                        <input
-                            type="text"
-                            value={query}
-                            onChange={(e) => setQuery(e.target.value)}
-                            placeholder="Ask a question about the manuals..."
-                            className="flex-grow bg-gem-mist border border-gem-mist/50 rounded-full py-3 px-5 focus:outline-none focus:ring-2 focus:ring-gem-blue"
-                            disabled={isQueryLoading}
-                        />
-                        <button type="submit" disabled={isQueryLoading || !query.trim()} className="p-3 bg-gem-blue hover:bg-blue-500 rounded-full text-white disabled:bg-gem-mist transition-colors" title="Send message">
-                            <SendIcon />
-                        </button>
-                    </form>
+            {/* Input */}
+            <div className="p-4 bg-gray-800 border-t border-gray-700">
+                <div className="max-w-3xl mx-auto relative">
+                    <input
+                        type="text"
+                        value={inputValue}
+                        onChange={(e) => setInputValue(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Pregunta a tu cerebro..."
+                        className="w-full bg-gray-900 text-white pl-4 pr-12 py-4 rounded-xl border border-gray-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all shadow-inner"
+                    />
+                    <button 
+                        onClick={handleSend}
+                        disabled={!inputValue.trim() || isQueryLoading}
+                        className="absolute right-2 top-2 p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        <SendIcon />
+                    </button>
                 </div>
             </div>
-
-            {modalContent !== null && (
-                <div 
-                    className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" 
-                    onClick={closeModal} 
-                    role="dialog" 
-                    aria-modal="true"
-                    aria-labelledby="source-modal-title"
-                >
-                    <div className="bg-gem-slate p-6 rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <h3 id="source-modal-title" className="text-xl font-bold mb-4">Source Text</h3>
-                        <div 
-                            className="flex-grow overflow-y-auto pr-4 text-gem-offwhite/80 border-t border-b border-gem-mist py-4"
-                            dangerouslySetInnerHTML={renderMarkdown(modalContent || '')}
-                        >
-                        </div>
-                        <div className="flex justify-end mt-6">
-                            <button onClick={closeModal} className="px-6 py-2 rounded-md bg-gem-blue hover:bg-blue-500 text-white transition-colors" title="Close source view">
-                                Close
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };
