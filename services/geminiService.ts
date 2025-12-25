@@ -2,13 +2,19 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
-import { RagStore, Document, QueryResult, CustomMetadata } from '../types';
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { QueryResult } from '../types';
 
 let ai: GoogleGenAI;
 
 export function initialize() {
-    ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // CORRECCIÓN: Usamos import.meta.env para Vite
+    const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+    if (!apiKey) {
+        console.error("Falta la VITE_GOOGLE_API_KEY. Asegúrate de ponerla en Cloudflare Pages.");
+        throw new Error("API Key no encontrada");
+    }
+    ai = new GoogleGenAI({ apiKey: apiKey });
 }
 
 async function delay(ms: number): Promise<void> {
@@ -16,7 +22,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    if (!ai) throw new Error("Gemini AI not initialized");
+    if (!ai) initialize(); // Aseguramos que se inicialice si no lo está
     const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
     if (!ragStore.name) {
         throw new Error("Failed to create RAG store: name is missing.");
@@ -25,13 +31,14 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    if (!ai) throw new Error("Gemini AI not initialized");
+    if (!ai) initialize();
     
     let op = await ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
     });
 
+    // Esperamos a que Google termine de procesar el archivo
     while (!op.done) {
         await delay(3000);
         op = await ai.operations.get({operation: op});
@@ -39,10 +46,10 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
-    if (!ai) throw new Error("Gemini AI not initialized");
+    if (!ai) initialize();
     const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: query + "DO NOT ASK THE USER TO READ THE MANUAL, pinpoint the relevant sections in the response itself.",
+        model: 'gemini-1.5-flash', // Usamos flash por velocidad, o pro para calidad
+        contents: query + " DO NOT ASK THE USER TO READ THE MANUAL, pinpoint the relevant sections in the response itself.",
         config: {
             tools: [
                     {
@@ -56,17 +63,17 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     return {
-        text: response.text,
+        text: response.text || "No se pudo generar respuesta.",
         groundingChunks: groundingChunks,
     };
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    if (!ai) throw new Error("Gemini AI not initialized");
+    if (!ai) initialize();
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: "You are provided some user manuals for some products. Figure out for what product each manual is for, based on the cover page contents. DO NOT GUESS OR HALLUCINATE THE PRODUCT. Then, for each product, generate 4 short and practical example questions a user might ask about it in English. Return the questions as a JSON array of objects. Each object should have a 'product' key with the product name as a string, and a 'questions' key with an array of 4 question strings. For example: ```json[{\"product\": \"Product A\", \"questions\": [\"q1\", \"q2\"]}, {\"product\": \"Product B\", \"questions\": [\"q3\", \"q4\"]}]```",
+            model: 'gemini-1.5-flash',
+            contents: "You are provided some user manuals. Figure out the product and generate 4 short practical questions. Return ONLY a JSON array of strings like [\"Question 1\", \"Question 2\"].",
             config: {
                 tools: [
                     {
@@ -78,52 +85,44 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
         
-        let jsonText = response.text.trim();
-
+        let jsonText = response.text?.trim() || "";
+        
+        // Limpieza básica de JSON por si el modelo añade markdown
         const jsonMatch = jsonText.match(/```json\n([\s\S]*?)\n```/);
         if (jsonMatch && jsonMatch[1]) {
             jsonText = jsonMatch[1];
         } else {
+             // Intento de encontrar array limpio
             const firstBracket = jsonText.indexOf('[');
             const lastBracket = jsonText.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            if (firstBracket !== -1 && lastBracket !== -1) {
                 jsonText = jsonText.substring(firstBracket, lastBracket + 1);
             }
         }
         
         const parsedData = JSON.parse(jsonText);
         
+        // Adaptación flexible a formatos
         if (Array.isArray(parsedData)) {
-            if (parsedData.length === 0) {
-                return [];
+            if (parsedData.length > 0 && typeof parsedData[0] === 'string') {
+                return parsedData;
             }
-            const firstItem = parsedData[0];
-
-            // Handle new format: array of {product, questions[]}
-            if (typeof firstItem === 'object' && firstItem !== null && 'questions' in firstItem && Array.isArray(firstItem.questions)) {
-                return parsedData.flatMap(item => (item.questions || [])).filter(q => typeof q === 'string');
-            }
-            
-            // Handle old format: array of strings
-            if (typeof firstItem === 'string') {
-                return parsedData.filter(q => typeof q === 'string');
+            // Si devuelve objetos complejos, aplanamos
+            if (parsedData.length > 0 && typeof parsedData[0] === 'object') {
+                 return parsedData.flatMap((item: any) => item.questions || []).filter((q:any) => typeof q === 'string');
             }
         }
-        
-        console.warn("Received unexpected format for example questions:", parsedData);
         return [];
     } catch (error) {
-        console.error("Failed to generate or parse example questions:", error);
+        console.error("Failed to generate questions:", error);
         return [];
     }
 }
 
-
 export async function deleteRagStore(ragStoreName: string): Promise<void> {
-    if (!ai) throw new Error("Gemini AI not initialized");
-    // DO: Remove `(as any)` type assertion.
+    if (!ai) initialize();
     await ai.fileSearchStores.delete({
         name: ragStoreName,
-        config: { force: true },
+        config: { force: true }, // Forzamos borrado aunque tenga archivos
     });
 }
