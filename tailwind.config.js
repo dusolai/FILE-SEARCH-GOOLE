@@ -3,6 +3,7 @@ export default {
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
+    "./*.{js,ts,jsx,tsx}" // <--- ¡NUEVA LÍNEA! Esto busca en la raíz (App.tsx, index.tsx)
   ],
   theme: {
     extend: {
