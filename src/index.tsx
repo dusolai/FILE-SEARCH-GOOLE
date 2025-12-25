@@ -1,7 +1,12 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+*/
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import './src/index.css'; // Importante: Carga los estilos
+import './index.css'; // Ahora busca el CSS justo a su lado en src/
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
