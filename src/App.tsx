@@ -11,19 +11,19 @@ import ProgressBar from './components/ProgressBar';
 import ChatInterface from './components/ChatInterface';
 
 const App: React.FC = () => {
-    console.log("🔄 App: Renderizando componente..."); // LOG DEBUG
-
+    // ESTADO DE LA APP
     const [status, setStatus] = useState<AppStatus>(AppStatus.Initializing);
     const [isApiKeySelected, setIsApiKeySelected] = useState(false);
     const [apiKeyError, setApiKeyError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState<{ current: number, total: number, message?: string, fileName?: string } | null>(null);
     
-    // Recuperar datos guardados
+    // PERSISTENCIA (Para no perder el cerebro al recargar)
     const [activeRagStoreName, setActiveRagStoreName] = useState<string | null>(
         localStorage.getItem('master_rag_store_id')
     );
     
+    // CHAT
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
     const [isQueryLoading, setIsQueryLoading] = useState(false);
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
@@ -31,57 +31,44 @@ const App: React.FC = () => {
     const [files, setFiles] = useState<File[]>([]);
     const ragStoreNameRef = useRef(activeRagStoreName);
 
-    // Inicialización
+    // 1. INICIO: Cargar clave guardada
     useEffect(() => {
-        console.log("🚀 App: Iniciando efecto de carga...");
         const savedKey = localStorage.getItem('gemini_api_key');
         if (savedKey) {
-            console.log("🔑 App: Clave encontrada en localStorage.");
-            try {
-                geminiService.initialize(savedKey);
-                setIsApiKeySelected(true);
-            } catch (e) {
-                console.error("❌ App: Error al inicializar con clave guardada:", e);
-            }
-        } else {
-            console.log("ℹ️ App: No hay clave guardada.");
+            geminiService.initialize(savedKey);
+            setIsApiKeySelected(true);
         }
         setStatus(AppStatus.Welcome);
     }, []);
 
-    // Guardar ID del store si cambia
+    // 2. EFECTO: Guardar ID del cerebro si cambia
     useEffect(() => {
+        ragStoreNameRef.current = activeRagStoreName;
         if (activeRagStoreName) {
-            console.log("💾 App: Guardando Store ID:", activeRagStoreName);
             localStorage.setItem('master_rag_store_id', activeRagStoreName);
         }
     }, [activeRagStoreName]);
 
-    // MANEJADOR DE LA CLAVE (Aquí es donde suele fallar si "no hace nada")
+    // 3. GESTIÓN DE CLAVE (Desde la pantalla de bienvenida)
     const handleApiKeySet = (key: string) => {
-        console.log("🖱️ App: handleApiKeySet llamado con clave:", key ? "****" : "vacía");
         try {
             const cleanKey = key.trim();
-            if (!cleanKey.startsWith("AIza")) {
-                throw new Error("La clave no empieza por 'AIza'.");
-            }
+            if (!cleanKey.startsWith("AIza")) throw new Error("La clave debe empezar por 'AIza'");
             
             localStorage.setItem('gemini_api_key', cleanKey);
-            geminiService.initialize(cleanKey); // Esto puede lanzar error
+            geminiService.initialize(cleanKey);
             
-            console.log("✅ App: Clave inicializada correctamente.");
             setIsApiKeySelected(true);
             setApiKeyError(null);
-        } catch (e) {
-            console.error("❌ App: Error configurando clave:", e);
-            setApiKeyError(e instanceof Error ? e.message : "Clave inválida");
-            setIsApiKeySelected(false);
+        } catch (e: any) {
+            setApiKeyError(e.message);
         }
     };
 
     const handleError = (message: string, err: any) => {
-        console.error("🔥 App Error:", message, err);
-        setError(`${message} ${err instanceof Error ? err.message : String(err)}`);
+        console.error("🔥 APP ERROR:", message, err);
+        const detail = err instanceof Error ? err.message : JSON.stringify(err);
+        setError(`${message} -> ${detail}`);
         setStatus(AppStatus.Error);
     };
 
@@ -90,63 +77,58 @@ const App: React.FC = () => {
         setStatus(AppStatus.Welcome);
     }
 
+    // 4. LÓGICA PRINCIPAL: SUBIR ARCHIVOS
     const handleUploadAndStartChat = async () => {
-        console.log("📤 App: handleUploadAndStartChat iniciado.");
-        
         if (!isApiKeySelected) {
-            console.warn("⚠️ App: Intento de subida sin API Key.");
-            setApiKeyError("⚠️ Conecta tu API Key primero.");
+            setApiKeyError("⚠️ Falta la API Key.");
             return;
         }
-        if (files.length === 0) {
-            console.warn("⚠️ App: Intento de subida sin archivos.");
-            return;
-        }
+        if (files.length === 0) return;
         
         setStatus(AppStatus.Uploading);
 
         try {
+            // Asegurar inicialización
+            const savedKey = localStorage.getItem('gemini_api_key');
+            if (savedKey) geminiService.initialize(savedKey);
+
             let storeName = activeRagStoreName;
-            
-            // Crear Store si no existe
+
+            // CREAR CEREBRO (Si no existe uno previo)
             if (!storeName) {
+                setUploadProgress({ current: 0, total: files.length + 1, message: "Creando Cerebro en Google..." });
                 const nuevoId = `CEREBRO_DIEGO_${Date.now()}`;
-                console.log("🔨 App: Creando nuevo store:", nuevoId);
-                setUploadProgress({ current: 0, total: files.length + 1, message: "Creando Cerebro..." });
                 storeName = await geminiService.createRagStore(nuevoId);
                 setActiveRagStoreName(storeName);
-            } else {
-                console.log("♻️ App: Usando store existente:", storeName);
             }
 
             const totalSteps = files.length + 1;
 
-            // Subir archivos
+            // SUBIR CADA ARCHIVO
             for (let i = 0; i < files.length; i++) {
-                console.log(`📤 App: Subiendo archivo ${i+1}/${files.length}: ${files[i].name}`);
                 setUploadProgress({ 
                     current: i + 1, 
                     total: totalSteps, 
-                    message: `Analizando ${files[i].name}...`, 
+                    message: `Procesando ${files[i].name}...`, 
                     fileName: files[i].name 
                 });
                 await geminiService.uploadToRagStore(storeName, files[i]);
             }
             
-            // Generar preguntas
-            setUploadProgress({ current: totalSteps, total: totalSteps, message: "Finalizando..." });
+            // FINALIZAR
+            setUploadProgress({ current: totalSteps, total: totalSteps, message: "Generando preguntas..." });
             try {
-                const questions = await geminiService.generateExampleQuestions(storeName);
-                setExampleQuestions(questions);
+                const qs = await geminiService.generateExampleQuestions(storeName);
+                setExampleQuestions(qs);
             } catch (e) {
-                console.warn("⚠️ App: Fallo al generar preguntas (no crítico).", e);
+                console.warn("Error generando preguntas (no crítico)", e);
             }
 
             setDocumentName("Cerebro Diego V1");
             setStatus(AppStatus.Chatting);
             setFiles([]); 
         } catch (err) {
-            handleError("Error crítico en la subida.", err);
+            handleError("Error durante la creación de la memoria.", err);
         } finally {
             setUploadProgress(null);
         }
@@ -156,7 +138,6 @@ const App: React.FC = () => {
 
     const handleSendMessage = async (message: string) => {
         if (!activeRagStoreName) return;
-        console.log("💬 App: Enviando mensaje:", message);
 
         const userMessage: ChatMessage = { role: 'user', parts: [{ text: message }] };
         setChatHistory(prev => [...prev, userMessage]);
@@ -171,7 +152,6 @@ const App: React.FC = () => {
             };
             setChatHistory(prev => [...prev, modelMessage]);
         } catch (err) {
-            console.error("❌ App: Error en chat:", err);
             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: "Error de conexión." }] }]);
         } finally {
             setIsQueryLoading(false);
@@ -182,7 +162,7 @@ const App: React.FC = () => {
     const renderContent = () => {
         switch(status) {
             case AppStatus.Initializing:
-                return <div className="flex h-screen items-center justify-center bg-gray-900 text-white">Cargando...</div>;
+                return <div className="flex h-screen items-center justify-center bg-gray-900 text-white"><Spinner /> Cargando...</div>;
             case AppStatus.Welcome:
                  return <WelcomeScreen 
                         onUpload={handleUploadAndStartChat} 
@@ -196,7 +176,7 @@ const App: React.FC = () => {
                 return <ProgressBar 
                     progress={uploadProgress?.current || 0} 
                     total={uploadProgress?.total || 1} 
-                    message={uploadProgress?.message || "Procesando..."} 
+                    message={uploadProgress?.message || "Iniciando..."} 
                     fileName={uploadProgress?.fileName}
                 />;
             case AppStatus.Chatting:
@@ -207,14 +187,17 @@ const App: React.FC = () => {
                     onSendMessage={handleSendMessage}
                     onNewChat={handleEndChat}
                     exampleQuestions={exampleQuestions}
+                    // IMPORTANTE: Pasamos el ID para que lo puedas copiar para n8n
                     ragStoreId={activeRagStoreName || ''} 
                 />;
             case AppStatus.Error:
                  return (
                     <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-red-500 p-8 text-center">
-                        <h1 className="text-3xl font-bold">Error</h1>
-                        <p>{error}</p>
-                        <button onClick={clearError} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded">Reintentar</button>
+                        <h1 className="text-3xl font-bold mb-4">Error Crítico</h1>
+                        <div className="bg-black/30 p-4 rounded text-left mb-6 max-w-2xl overflow-auto max-h-40 font-mono text-sm border border-red-800">
+                            {error}
+                        </div>
+                        <button onClick={clearError} className="px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-500">Volver a intentar</button>
                     </div>
                 );
             default: return null;
