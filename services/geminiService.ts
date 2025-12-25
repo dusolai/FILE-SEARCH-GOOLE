@@ -8,10 +8,10 @@ import { QueryResult } from '../types';
 let ai: GoogleGenAI;
 
 export function initialize() {
-    // CORRECCIÓN: Usamos import.meta.env para Vite
+    // CORRECCIÓN CRÍTICA: Usamos import.meta.env para Vite/Cloudflare Pages
     const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
     if (!apiKey) {
-        console.error("Falta la VITE_GOOGLE_API_KEY. Asegúrate de ponerla en Cloudflare Pages.");
+        console.error("Falta la variable VITE_GOOGLE_API_KEY. Asegúrate de añadirla en Cloudflare Pages > Settings > Environment Variables.");
         throw new Error("API Key no encontrada");
     }
     ai = new GoogleGenAI({ apiKey: apiKey });
@@ -22,7 +22,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    if (!ai) initialize(); // Aseguramos que se inicialice si no lo está
+    if (!ai) initialize();
     const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
     if (!ragStore.name) {
         throw new Error("Failed to create RAG store: name is missing.");
@@ -38,7 +38,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         file: file
     });
 
-    // Esperamos a que Google termine de procesar el archivo
+    // Esperar a que Google procese el archivo
     while (!op.done) {
         await delay(3000);
         op = await ai.operations.get({operation: op});
@@ -48,7 +48,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
     if (!ai) initialize();
     const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-1.5-flash', // Usamos flash por velocidad, o pro para calidad
+        model: 'gemini-1.5-flash',
         contents: query + " DO NOT ASK THE USER TO READ THE MANUAL, pinpoint the relevant sections in the response itself.",
         config: {
             tools: [
@@ -63,7 +63,7 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     return {
-        text: response.text || "No se pudo generar respuesta.",
+        text: response.text || "No se pudo obtener respuesta.",
         groundingChunks: groundingChunks,
     };
 }
@@ -73,48 +73,20 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-1.5-flash',
-            contents: "You are provided some user manuals. Figure out the product and generate 4 short practical questions. Return ONLY a JSON array of strings like [\"Question 1\", \"Question 2\"].",
+            contents: "Return ONLY a JSON array of 4 short practical questions strings like [\"Q1\", \"Q2\"].",
             config: {
-                tools: [
-                    {
-                        fileSearch: {
-                            fileSearchStoreNames: [ragStoreName],
-                        }
-                    }
-                ]
+                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
             }
         });
         
-        let jsonText = response.text?.trim() || "";
-        
-        // Limpieza básica de JSON por si el modelo añade markdown
+        let jsonText = response.text?.trim() || "[]";
         const jsonMatch = jsonText.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch && jsonMatch[1]) {
-            jsonText = jsonMatch[1];
-        } else {
-             // Intento de encontrar array limpio
-            const firstBracket = jsonText.indexOf('[');
-            const lastBracket = jsonText.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1) {
-                jsonText = jsonText.substring(firstBracket, lastBracket + 1);
-            }
-        }
+        if (jsonMatch && jsonMatch[1]) jsonText = jsonMatch[1];
         
-        const parsedData = JSON.parse(jsonText);
-        
-        // Adaptación flexible a formatos
-        if (Array.isArray(parsedData)) {
-            if (parsedData.length > 0 && typeof parsedData[0] === 'string') {
-                return parsedData;
-            }
-            // Si devuelve objetos complejos, aplanamos
-            if (parsedData.length > 0 && typeof parsedData[0] === 'object') {
-                 return parsedData.flatMap((item: any) => item.questions || []).filter((q:any) => typeof q === 'string');
-            }
-        }
-        return [];
+        const parsed = JSON.parse(jsonText);
+        return Array.isArray(parsed) ? parsed.map(String) : [];
     } catch (error) {
-        console.error("Failed to generate questions:", error);
+        console.error("Error generating questions:", error);
         return [];
     }
 }
@@ -123,6 +95,6 @@ export async function deleteRagStore(ragStoreName: string): Promise<void> {
     if (!ai) initialize();
     await ai.fileSearchStores.delete({
         name: ragStoreName,
-        config: { force: true }, // Forzamos borrado aunque tenga archivos
+        config: { force: true },
     });
 }
