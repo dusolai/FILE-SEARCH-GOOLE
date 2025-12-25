@@ -5,16 +5,37 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { QueryResult } from '../types';
 
-let ai: GoogleGenAI;
+let ai: GoogleGenAI | null = null;
 
-export function initialize() {
-    // CORRECCIÓN CRÍTICA: Usamos import.meta.env para Vite/Cloudflare Pages
-    const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
-    if (!apiKey) {
-        console.error("Falta la variable VITE_GOOGLE_API_KEY. Asegúrate de añadirla en Cloudflare Pages > Settings > Environment Variables.");
-        throw new Error("API Key no encontrada");
+// AHORA ACEPTA LA CLAVE COMO PARÁMETRO
+export function initialize(apiKey?: string) {
+    // 1. Intentamos usar la clave pasada
+    let keyToUse = apiKey;
+    
+    // 2. Si no, miramos en localStorage
+    if (!keyToUse) {
+        keyToUse = localStorage.getItem('gemini_api_key') || undefined;
     }
-    ai = new GoogleGenAI({ apiKey: apiKey });
+
+    // 3. Si no, intentamos variable de entorno (fallback)
+    if (!keyToUse) {
+        keyToUse = import.meta.env.VITE_GOOGLE_API_KEY;
+    }
+
+    if (!keyToUse) {
+        console.warn("GeminiService: No API Key found yet.");
+        return; 
+    }
+
+    ai = new GoogleGenAI({ apiKey: keyToUse });
+}
+
+function getAiInstance() {
+    if (!ai) {
+        initialize();
+        if (!ai) throw new Error("API Key no configurada. Por favor, introdúcela en la pantalla de inicio.");
+    }
+    return ai!;
 }
 
 async function delay(ms: number): Promise<void> {
@@ -22,58 +43,49 @@ async function delay(ms: number): Promise<void> {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    if (!ai) initialize();
-    const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
-    if (!ragStore.name) {
-        throw new Error("Failed to create RAG store: name is missing.");
-    }
+    const aiInstance = getAiInstance();
+    const ragStore = await aiInstance.fileSearchStores.create({ config: { displayName } });
+    if (!ragStore.name) throw new Error("Failed to create RAG store");
     return ragStore.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    if (!ai) initialize();
+    const aiInstance = getAiInstance();
     
-    let op = await ai.fileSearchStores.uploadToFileSearchStore({
+    let op = await aiInstance.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
     });
 
-    // Esperar a que Google procese el archivo
     while (!op.done) {
-        await delay(3000);
-        op = await ai.operations.get({operation: op});
+        await delay(2000); // Polling cada 2s
+        op = await aiInstance.operations.get({operation: op});
     }
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
-    if (!ai) initialize();
-    const response: GenerateContentResponse = await ai.models.generateContent({
+    const aiInstance = getAiInstance();
+    const response: GenerateContentResponse = await aiInstance.models.generateContent({
         model: 'gemini-1.5-flash',
-        contents: query + " DO NOT ASK THE USER TO READ THE MANUAL, pinpoint the relevant sections in the response itself.",
+        contents: query + " Responde en español. Basa tu respuesta ESTRICTAMENTE en los documentos proporcionados.",
         config: {
-            tools: [
-                    {
-                        fileSearch: {
-                            fileSearchStoreNames: [ragStoreName],
-                        }
-                    }
-                ]
+            tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
         }
     });
 
     const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     return {
-        text: response.text || "No se pudo obtener respuesta.",
+        text: response.text || "No encontré información relevante en tus documentos.",
         groundingChunks: groundingChunks,
     };
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    if (!ai) initialize();
+    const aiInstance = getAiInstance();
     try {
-        const response = await ai.models.generateContent({
+        const response = await aiInstance.models.generateContent({
             model: 'gemini-1.5-flash',
-            contents: "Return ONLY a JSON array of 4 short practical questions strings like [\"Q1\", \"Q2\"].",
+            contents: "Genera 4 preguntas cortas en español sobre el contenido de estos documentos. Devuelve SOLO un array JSON de strings.",
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
             }
@@ -86,15 +98,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const parsed = JSON.parse(jsonText);
         return Array.isArray(parsed) ? parsed.map(String) : [];
     } catch (error) {
-        console.error("Error generating questions:", error);
-        return [];
+        console.error("Error generando preguntas:", error);
+        return ["¿De qué tratan estos documentos?", "¿Resumen principal?", "¿Puntos clave?", "¿Conclusiones?"];
     }
-}
-
-export async function deleteRagStore(ragStoreName: string): Promise<void> {
-    if (!ai) initialize();
-    await ai.fileSearchStores.delete({
-        name: ragStoreName,
-        config: { force: true },
-    });
 }
