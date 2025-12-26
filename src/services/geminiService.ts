@@ -78,14 +78,20 @@ export async function createRagStore(displayName: string): Promise<string> {
     }
 }
 
-// --- 4. SUBIR ARCHIVO (REPARADO PASO C) ---
+// --- 4. SUBIR ARCHIVO (VERSIÓN CORREGIDA CON REST API) ---
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    const aiInstance = getAiInstance();
     const realMimeType = getMimeType(file);
     
     console.log(`🚀 Subiendo: ${file.name} | Tipo detectado: ${realMimeType}`);
 
     try {
+        const aiInstance = getAiInstance();
+        const apiKey = localStorage.getItem('gemini_api_key');
+        
+        if (!apiKey) {
+            throw new Error("No se encontró la API Key en localStorage");
+        }
+
         // PASO A: Subir a la nube temporal
         const uploadResponse = await aiInstance.files.upload({
             file: file,
@@ -115,30 +121,61 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             throw new Error(`Google rechazó el archivo. Error: ${processedFile.error?.message || 'Desconocido'}`);
         }
 
-        // PASO C: VINCULAR (La parte que fallaba)
-        console.log(`🔗 Conectando a memoria ${ragStoreName}...`);
+        console.log(`✅ Archivo procesado: ${processedFile.name}`);
 
-        // TRUCO: A veces la API falla si le pasamos "fileSearchStores/ID" completo en el campo ID.
-        // Vamos a extraer solo el ID limpio por si acaso.
+        // PASO C: VINCULAR usando REST API directa (SOLUCIÓN AL BUG DEL SDK)
+        console.log(`🔗 Conectando a memoria ${ragStoreName}...`);
+        
         const cleanStoreId = ragStoreName.replace("fileSearchStores/", "");
 
-        // Usamos .files.create para crear el vínculo, NO importFile
-        await aiInstance.fileSearchStores.files.create({
-            fileSearchStoreId: cleanStoreId,
-            fileSearchStoreFile: {
-                file: processedFile.name // Esto es "files/abc..."
+        // Usar REST API directamente porque el SDK no tiene fileSearchStores.files.create
+        const linkResponse = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey
+                },
+                body: JSON.stringify({
+                    file: processedFile.name // "files/abc..."
+                })
             }
-        });
+        );
 
-        console.log(`🎉 ¡${file.name} LISTO!`);
+        if (!linkResponse.ok) {
+            const errorText = await linkResponse.text();
+            let errorData;
+            try {
+                errorData = JSON.parse(errorText);
+            } catch {
+                errorData = { message: errorText };
+            }
+            
+            console.error("❌ Error de vinculación:", errorData);
+            throw new Error(`Error al vincular archivo (${linkResponse.status}): ${errorData.error?.message || errorData.message || errorText}`);
+        }
+
+        const linkResult = await linkResponse.json();
+        console.log(`🎉 ¡${file.name} vinculado correctamente!`, linkResult);
 
     } catch (error: any) {
         const msg = error.message || JSON.stringify(error);
         console.error(`❌ Error fatal con ${file.name}:`, msg);
         
-        if (msg.includes("403")) throw new Error("Error 403: Revisa permisos API Key.");
-        if (msg.includes("429")) throw new Error("Error 429: Demasiadas peticiones.");
-        if (msg.includes("INVALID_ARGUMENT")) throw new Error("Error 400: Argumento inválido al vincular (Revisa logs).");
+        // Errores específicos mejorados
+        if (msg.includes("403") || msg.includes("PERMISSION_DENIED")) {
+            throw new Error("Error 403: La API Key no tiene permisos. Verifica que tenga acceso a 'Generative Language API' habilitado.");
+        }
+        if (msg.includes("429")) {
+            throw new Error("Error 429: Demasiadas peticiones. Espera un momento e intenta de nuevo.");
+        }
+        if (msg.includes("INVALID_ARGUMENT") || msg.includes("400")) {
+            throw new Error(`Error 400: Argumento inválido. Verifica que el store (${ragStoreName}) y el archivo existan.`);
+        }
+        if (msg.includes("404") || msg.includes("NOT_FOUND")) {
+            throw new Error("Error 404: Store o archivo no encontrado. El ID podría haber expirado.");
+        }
         
         throw new Error(`Error subiendo ${file.name}: ${msg}`);
     }
