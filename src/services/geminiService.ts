@@ -34,19 +34,16 @@ function getAiInstance() {
     return ai!;
 }
 
-// --- 2. DETECTOR MANUAL DE TIPOS (EL SALVAVIDAS) ---
+// --- 2. DETECTOR MANUAL DE TIPOS ---
 function getMimeType(file: File): string {
-    // Si el navegador ya lo sabe, genial
     if (file.type && file.type !== "") return file.type;
     
-    // Si no, lo adivinamos por la extensión
     const name = file.name.toLowerCase();
     if (name.endsWith('.md')) return 'text/md';
     if (name.endsWith('.txt')) return 'text/plain';
     if (name.endsWith('.pdf')) return 'application/pdf';
     if (name.endsWith('.csv')) return 'text/csv';
     
-    // Por defecto, texto plano
     return 'text/plain';
 }
 
@@ -64,7 +61,7 @@ export async function createRagStore(displayName: string): Promise<string> {
             config: { displayName } 
         });
 
-        // Buscamos el ID desesperadamente en la respuesta
+        // Buscamos el ID
         const storeName = response.name || 
                           response.fileSearchStore?.name || 
                           response.newFileSearchStore?.name;
@@ -82,28 +79,29 @@ export async function createRagStore(displayName: string): Promise<string> {
     }
 }
 
-// --- 4. SUBIR ARCHIVO (AQUÍ ESTABA EL FALLO) ---
+// --- 4. SUBIR ARCHIVO (CORREGIDO) ---
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const aiInstance = getAiInstance();
-    // Usamos el detector manual para asegurar el tipo
     const realMimeType = getMimeType(file);
     
     console.log(`🚀 Subiendo: ${file.name} | Tipo detectado: ${realMimeType}`);
 
     try {
         // PASO A: Subir a la nube temporal
+        // EL CAMBIO: uploadResponse ya ES el archivo, no tiene .file dentro
         const uploadResponse = await aiInstance.files.upload({
             file: file,
             config: { 
                 displayName: file.name, 
-                mimeType: realMimeType // <--- ¡ESTO ES LA CLAVE!
+                mimeType: realMimeType 
             }
         });
         
-        console.log(`☁️ Subido OK. ID Temporal: ${uploadResponse.file.name}`);
+        // CORRECCIÓN AQUÍ: Usamos uploadResponse directamente
+        console.log(`☁️ Subido OK. ID Temporal: ${uploadResponse.name}`);
 
-        // PASO B: Esperar a que Google lo procese (Polling robusto)
-        let processedFile = uploadResponse.file;
+        // PASO B: Esperar a que Google lo procese
+        let processedFile = uploadResponse; // Asignamos directo
         let attempts = 0;
         
         while (processedFile.state === 'PROCESSING') {
@@ -111,10 +109,10 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             if (attempts > 30) throw new Error("Tiempo de espera agotado procesando archivo.");
             
             console.log(`⏳ Procesando... (${attempts*2}s)`);
-            await delay(2000); // Esperar 2 segundos
+            await delay(2000); 
             
             // Consultar estado actual
-            processedFile = await aiInstance.files.get({ name: uploadResponse.file.name });
+            processedFile = await aiInstance.files.get({ name: uploadResponse.name });
         }
 
         if (processedFile.state === 'FAILED') {
@@ -131,11 +129,9 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         console.log(`🎉 ¡${file.name} LISTO!`);
 
     } catch (error: any) {
-        // Mejor mensaje de error para que sepas qué pasa
         const msg = error.message || JSON.stringify(error);
         console.error(`❌ Error fatal con ${file.name}:`, msg);
         
-        // Si es error de cuota o permisos, avisar claro
         if (msg.includes("403")) throw new Error("Error 403: Revisa si tu API Key tiene permisos.");
         if (msg.includes("429")) throw new Error("Error 429: Has subido demasiados archivos muy rápido.");
         
