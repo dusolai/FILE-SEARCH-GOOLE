@@ -187,7 +187,6 @@ const App: React.FC = () => {
                     onSendMessage={handleSendMessage}
                     onNewChat={handleEndChat}
                     exampleQuestions={exampleQuestions}
-                    // IMPORTANTE: Pasamos el ID para que lo puedas copiar para n8n
                     ragStoreId={activeRagStoreName || ''} 
                 />;
             case AppStatus.Error:
