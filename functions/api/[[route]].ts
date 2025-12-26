@@ -8,21 +8,19 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // CORS Headers (Para permitir peticiones)
+  // Headers CORS estándar
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
 
-  // Manejar preflight (peticiones de chequeo del navegador)
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Verificar que tenemos la API Key
   if (!env.GEMINI_API_KEY) {
-    return new Response(JSON.stringify({ error: "Falta configuración GEMINI_API_KEY en Cloudflare" }), { 
+    return new Response(JSON.stringify({ error: "Falta configuración GEMINI_API_KEY" }), { 
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } 
     });
   }
@@ -30,13 +28,15 @@ export async function onRequest(context) {
   try {
     const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 
-    // --- RUTAS DE LA API ---
-
-    // 1. CREAR CEREBRO
+    // --- 1. CREAR CEREBRO ---
     if (url.pathname.endsWith("/create-store") && request.method === "POST") {
       const { displayName } = await request.json();
-      const response = await ai.fileSearchStores.create({ config: { displayName } });
-      // Extraemos el ID con seguridad
+      
+      // Corrección: Pasamos el objeto directamente según especificación v1beta
+      const response = await ai.fileSearchStores.create({ 
+          fileSearchStore: { displayName: displayName } 
+      });
+      
       const storeId = response.name || response.newFileSearchStore?.name || response.fileSearchStore?.name;
       
       return new Response(JSON.stringify({ name: storeId }), { 
@@ -44,7 +44,7 @@ export async function onRequest(context) {
       });
     }
 
-    // 2. SUBIR ARCHIVO
+    // --- 2. SUBIR ARCHIVO ---
     if (url.pathname.endsWith("/upload") && request.method === "POST") {
       const formData = await request.formData();
       const file = formData.get("file");
@@ -60,22 +60,30 @@ export async function onRequest(context) {
       });
     }
 
-    // 3. VINCULAR ARCHIVO (REST MANUAL PARA EVITAR BUG DEL SDK)
+    // --- 3. VINCULAR ARCHIVO (REST API ROBUSTA) ---
     if (url.pathname.endsWith("/link-file") && request.method === "POST") {
       const { storeId, fileId } = await request.json();
-      const cleanStoreId = storeId.replace("fileSearchStores/", "");
       
-      // Llamada directa a la API REST de Google
-      const linkUrl = `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files?key=${env.GEMINI_API_KEY}`;
+      // Limpieza robusta del ID: Quitamos prefijos y espacios
+      const cleanStoreId = storeId.replace("fileSearchStores/", "").trim();
       
+      // Construcción URL
+      const linkUrl = `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files`;
+
+      console.log(`Backend: Intentando vincular en: ${linkUrl}`);
+
       const linkRes = await fetch(linkUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+              "Content-Type": "application/json",
+              "x-goog-api-key": env.GEMINI_API_KEY // CLAVE EN HEADER
+          },
           body: JSON.stringify({ file: fileId })
       });
 
       if (!linkRes.ok) {
           const errText = await linkRes.text();
+          console.error(`Backend Error Google: ${errText}`);
           throw new Error(`Google API Error (${linkRes.status}): ${errText}`);
       }
 
@@ -85,7 +93,7 @@ export async function onRequest(context) {
       });
     }
 
-    // 4. CHAT
+    // --- 4. CHAT ---
     if (url.pathname.endsWith("/chat") && request.method === "POST") {
       const { storeId, query } = await request.json();
       const model = ai.getGenerativeModel({ 
