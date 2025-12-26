@@ -7,125 +7,146 @@ import { QueryResult } from '../types';
 
 let ai: GoogleGenAI | null = null;
 
+// --- 1. FUNCIÓN DE LIMPIEZA Y CONEXIÓN ---
 export function initialize(apiKey?: string) {
     let keyToUse = apiKey ? apiKey.trim() : undefined;
+    if (!keyToUse) keyToUse = localStorage.getItem('gemini_api_key') || undefined;
+    if (!keyToUse) keyToUse = import.meta.env.VITE_GOOGLE_API_KEY;
+
     if (!keyToUse) {
-        keyToUse = localStorage.getItem('gemini_api_key') || undefined;
-    }
-    if (!keyToUse) {
-        keyToUse = import.meta.env.VITE_GOOGLE_API_KEY;
-    }
-    if (!keyToUse) {
-        console.warn("GeminiService: No API Key found yet.");
+        console.warn("⚠️ GeminiService: Esperando API Key...");
         return; 
     }
-    // Aseguramos que la instancia se cree limpia
-    ai = new GoogleGenAI({ apiKey: keyToUse });
-    console.log("✅ Gemini Service inicializado.");
+
+    try {
+        ai = new GoogleGenAI({ apiKey: keyToUse });
+        console.log("✅ Gemini Conectado.");
+    } catch (e) {
+        console.error("❌ Fallo en conexión inicial:", e);
+    }
 }
 
 function getAiInstance() {
     if (!ai) {
         initialize();
-        if (!ai) throw new Error("API Key no configurada.");
+        if (!ai) throw new Error("No hay conexión con Gemini. Recarga y pon la Key.");
     }
     return ai!;
 }
 
-// Función auxiliar para convertir File a Base64 (Necesario para navegadores)
-async function fileToGenerativePart(file: File): Promise<{ inlineData: { data: string; mimeType: string } }> {
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-            const base64String = (reader.result as string).split(',')[1];
-            resolve({
-                inlineData: {
-                    data: base64String,
-                    mimeType: file.type
-                }
-            });
-        };
-        reader.readAsDataURL(file);
-    });
+// --- 2. DETECTOR MANUAL DE TIPOS (EL SALVAVIDAS) ---
+function getMimeType(file: File): string {
+    // Si el navegador ya lo sabe, genial
+    if (file.type && file.type !== "") return file.type;
+    
+    // Si no, lo adivinamos por la extensión
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.md')) return 'text/md';
+    if (name.endsWith('.txt')) return 'text/plain';
+    if (name.endsWith('.pdf')) return 'application/pdf';
+    if (name.endsWith('.csv')) return 'text/csv';
+    
+    // Por defecto, texto plano
+    return 'text/plain';
 }
 
+async function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- 3. CREAR CEREBRO ---
 export async function createRagStore(displayName: string): Promise<string> {
     const aiInstance = getAiInstance();
-    console.log(`🧠 Intentando crear cerebro: ${displayName}...`);
+    console.log(`🧠 Creando estructura: ${displayName}`);
     
     try {
-        const response = await aiInstance.fileSearchStores.create({ 
+        const response: any = await aiInstance.fileSearchStores.create({ 
             config: { displayName } 
         });
 
-        console.log("📦 Respuesta completa de Google (Debug):", response);
-
-        // BUSCAMOS EL ID DONDE SEA QUE ESTÉ (A veces cambia la estructura)
-        // Puede estar en 'name', en 'fileSearchStore.name' o 'response.name'
-        const storeName = response.name || (response as any).fileSearchStore?.name || (response as any).newFileSearchStore?.name;
+        // Buscamos el ID desesperadamente en la respuesta
+        const storeName = response.name || 
+                          response.fileSearchStore?.name || 
+                          response.newFileSearchStore?.name;
 
         if (!storeName) {
-            console.error("❌ Estructura recibida:", JSON.stringify(response, null, 2));
-            throw new Error("Google devolvió una respuesta vacía o sin nombre.");
+            console.error("Respuesta Google:", response);
+            throw new Error("Google no devolvió el ID del Cerebro.");
         }
 
-        console.log(`✅ Cerebro creado con éxito: ${storeName}`);
+        console.log(`✅ Cerebro ID: ${storeName}`);
         return storeName;
     } catch (error: any) {
-        console.error("🔥 Error crítico creando store:", error);
-        throw new Error(`Fallo al crear store: ${error.message || error}`);
+        console.error("🔥 Error CreateStore:", error);
+        throw new Error(`Fallo al crear cerebro: ${error.message}`);
     }
 }
 
+// --- 4. SUBIR ARCHIVO (AQUÍ ESTABA EL FALLO) ---
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const aiInstance = getAiInstance();
-    console.log(`📤 Subiendo ${file.name} (tipo: ${file.type})...`);
+    // Usamos el detector manual para asegurar el tipo
+    const realMimeType = getMimeType(file);
+    
+    console.log(`🚀 Subiendo: ${file.name} | Tipo detectado: ${realMimeType}`);
 
     try {
-        // PASO 1: Subir el archivo a la "nube temporal" de Google (Files API)
-        // En navegador, usamos upload() normal primero
+        // PASO A: Subir a la nube temporal
         const uploadResponse = await aiInstance.files.upload({
-            file: file, // El SDK nuevo suele aceptar File de navegador aquí
+            file: file,
             config: { 
-                displayName: file.name,
-                mimeType: file.type || 'text/plain' 
+                displayName: file.name, 
+                mimeType: realMimeType // <--- ¡ESTO ES LA CLAVE!
             }
         });
         
-        console.log(`✅ Archivo subido a temporal: ${uploadResponse.file.name}`);
+        console.log(`☁️ Subido OK. ID Temporal: ${uploadResponse.file.name}`);
 
-        // PASO 2: Importar ese archivo al Cerebro (RAG Store)
-        console.log(`🔗 Vinculando ${uploadResponse.file.name} al cerebro ${ragStoreName}...`);
+        // PASO B: Esperar a que Google lo procese (Polling robusto)
+        let processedFile = uploadResponse.file;
+        let attempts = 0;
         
-        // Esperamos a que el archivo esté ACTIVO antes de importar
-        let fileState = uploadResponse.file.state;
-        while (fileState === 'PROCESSING') {
-            console.log("⏳ Procesando archivo...");
-            await new Promise(r => setTimeout(r, 2000));
-            const fileCheck = await aiInstance.files.get({ name: uploadResponse.file.name });
-            fileState = fileCheck.state;
+        while (processedFile.state === 'PROCESSING') {
+            attempts++;
+            if (attempts > 30) throw new Error("Tiempo de espera agotado procesando archivo.");
+            
+            console.log(`⏳ Procesando... (${attempts*2}s)`);
+            await delay(2000); // Esperar 2 segundos
+            
+            // Consultar estado actual
+            processedFile = await aiInstance.files.get({ name: uploadResponse.file.name });
         }
 
-        if (fileState === 'FAILED') throw new Error("El procesamiento del archivo falló en Google.");
+        if (processedFile.state === 'FAILED') {
+            throw new Error(`Google rechazó el archivo. Error: ${processedFile.error?.message || 'Desconocido'}`);
+        }
 
-        // Ahora lo metemos en el store
+        // PASO C: Meterlo en el Cerebro
+        console.log(`🔗 Conectando a memoria ${ragStoreName}...`);
         await aiInstance.fileSearchStores.importFile({
             fileSearchStoreName: ragStoreName,
-            file: uploadResponse.file.name // Usamos el ID del archivo subido (files/xxxx)
+            file: processedFile.name
         });
 
-        console.log(`🎉 ${file.name} integrado en la memoria.`);
+        console.log(`🎉 ¡${file.name} LISTO!`);
 
     } catch (error: any) {
-        console.error("❌ Error en subida:", error);
-        throw new Error(`Error subiendo ${file.name}: ${error.message}`);
+        // Mejor mensaje de error para que sepas qué pasa
+        const msg = error.message || JSON.stringify(error);
+        console.error(`❌ Error fatal con ${file.name}:`, msg);
+        
+        // Si es error de cuota o permisos, avisar claro
+        if (msg.includes("403")) throw new Error("Error 403: Revisa si tu API Key tiene permisos.");
+        if (msg.includes("429")) throw new Error("Error 429: Has subido demasiados archivos muy rápido.");
+        
+        throw new Error(`Error subiendo ${file.name}: ${msg}`);
     }
 }
 
+// --- 5. BÚSQUEDA (CHAT) ---
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
     const aiInstance = getAiInstance();
-    // Validamos que el store exista antes de preguntar
-    if (!ragStoreName) return { text: "Error: No hay cerebro conectado.", groundingChunks: [] };
+    if (!ragStoreName) return { text: "⚠️ Error: No hay cerebro conectado.", groundingChunks: [] };
 
     try {
         const response: GenerateContentResponse = await aiInstance.models.generateContent({
@@ -138,16 +159,15 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 
         const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
         return {
-            text: response.text || "Sin respuesta.",
+            text: response.text || "No encontré nada relevante en los documentos.",
             groundingChunks: groundingChunks,
         };
-    } catch (e) {
-        console.error("Error en búsqueda:", e);
-        return { text: "Error de conexión con Gemini.", groundingChunks: [] };
+    } catch (e: any) {
+        console.error("Error Chat:", e);
+        return { text: `Error de conexión: ${e.message}`, groundingChunks: [] };
     }
 }
 
-// Mantenemos esta función igual, es segura
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    return ["¿Qué dice el documento?", "¿Resumen clave?", "¿Datos importantes?"];
+    return ["¿Resumen de los documentos?", "¿Puntos clave?", "¿Qué conclusiones hay?"];
 }
