@@ -61,7 +61,6 @@ export async function createRagStore(displayName: string): Promise<string> {
             config: { displayName } 
         });
 
-        // Buscamos el ID
         const storeName = response.name || 
                           response.fileSearchStore?.name || 
                           response.newFileSearchStore?.name;
@@ -79,7 +78,7 @@ export async function createRagStore(displayName: string): Promise<string> {
     }
 }
 
-// --- 4. SUBIR ARCHIVO (CORREGIDO) ---
+// --- 4. SUBIR ARCHIVO (REPARADO PASO C) ---
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const aiInstance = getAiInstance();
     const realMimeType = getMimeType(file);
@@ -88,7 +87,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     try {
         // PASO A: Subir a la nube temporal
-        // EL CAMBIO: uploadResponse ya ES el archivo, no tiene .file dentro
         const uploadResponse = await aiInstance.files.upload({
             file: file,
             config: { 
@@ -97,11 +95,10 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             }
         });
         
-        // CORRECCIÓN AQUÍ: Usamos uploadResponse directamente
         console.log(`☁️ Subido OK. ID Temporal: ${uploadResponse.name}`);
 
         // PASO B: Esperar a que Google lo procese
-        let processedFile = uploadResponse; // Asignamos directo
+        let processedFile = uploadResponse; 
         let attempts = 0;
         
         while (processedFile.state === 'PROCESSING') {
@@ -111,7 +108,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             console.log(`⏳ Procesando... (${attempts*2}s)`);
             await delay(2000); 
             
-            // Consultar estado actual
             processedFile = await aiInstance.files.get({ name: uploadResponse.name });
         }
 
@@ -119,11 +115,19 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             throw new Error(`Google rechazó el archivo. Error: ${processedFile.error?.message || 'Desconocido'}`);
         }
 
-        // PASO C: Meterlo en el Cerebro
+        // PASO C: VINCULAR (La parte que fallaba)
         console.log(`🔗 Conectando a memoria ${ragStoreName}...`);
-        await aiInstance.fileSearchStores.importFile({
-            fileSearchStoreName: ragStoreName,
-            file: processedFile.name
+
+        // TRUCO: A veces la API falla si le pasamos "fileSearchStores/ID" completo en el campo ID.
+        // Vamos a extraer solo el ID limpio por si acaso.
+        const cleanStoreId = ragStoreName.replace("fileSearchStores/", "");
+
+        // Usamos .files.create para crear el vínculo, NO importFile
+        await aiInstance.fileSearchStores.files.create({
+            fileSearchStoreId: cleanStoreId,
+            fileSearchStoreFile: {
+                file: processedFile.name // Esto es "files/abc..."
+            }
         });
 
         console.log(`🎉 ¡${file.name} LISTO!`);
@@ -132,8 +136,9 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         const msg = error.message || JSON.stringify(error);
         console.error(`❌ Error fatal con ${file.name}:`, msg);
         
-        if (msg.includes("403")) throw new Error("Error 403: Revisa si tu API Key tiene permisos.");
-        if (msg.includes("429")) throw new Error("Error 429: Has subido demasiados archivos muy rápido.");
+        if (msg.includes("403")) throw new Error("Error 403: Revisa permisos API Key.");
+        if (msg.includes("429")) throw new Error("Error 429: Demasiadas peticiones.");
+        if (msg.includes("INVALID_ARGUMENT")) throw new Error("Error 400: Argumento inválido al vincular (Revisa logs).");
         
         throw new Error(`Error subiendo ${file.name}: ${msg}`);
     }
