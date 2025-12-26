@@ -8,7 +8,7 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // Headers CORS estándar
+  // Headers CORS
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -32,7 +32,6 @@ export async function onRequest(context) {
     if (url.pathname.endsWith("/create-store") && request.method === "POST") {
       const { displayName } = await request.json();
       
-      // Corrección: Pasamos el objeto directamente según especificación v1beta
       const response = await ai.fileSearchStores.create({ 
           fileSearchStore: { displayName: displayName } 
       });
@@ -60,23 +59,27 @@ export async function onRequest(context) {
       });
     }
 
-    // --- 3. VINCULAR ARCHIVO (REST API ROBUSTA) ---
+    // --- 3. VINCULAR ARCHIVO (REST API BLINDADA) ---
     if (url.pathname.endsWith("/link-file") && request.method === "POST") {
       const { storeId, fileId } = await request.json();
       
-      // Limpieza robusta del ID: Quitamos prefijos y espacios
-      const cleanStoreId = storeId.replace("fileSearchStores/", "").trim();
+      // 1. Limpieza de ID más segura (toma lo que hay después del último /)
+      const storeIdParts = storeId.split("/");
+      const cleanStoreId = storeIdParts[storeIdParts.length - 1].trim();
       
-      // Construcción URL
-      const linkUrl = `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files`;
+      // 2. Espera de seguridad (Propagación)
+      await new Promise(r => setTimeout(r, 2000));
 
-      console.log(`Backend: Intentando vincular en: ${linkUrl}`);
+      // 3. URL con Key incluida para evitar errores de enrutado
+      const linkUrl = `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files?key=${env.GEMINI_API_KEY}`;
+
+      console.log(`Backend: Vinculando ${fileId} en ${cleanStoreId}`);
 
       const linkRes = await fetch(linkUrl, {
           method: "POST",
           headers: { 
-              "Content-Type": "application/json",
-              "x-goog-api-key": env.GEMINI_API_KEY // CLAVE EN HEADER
+              "Content-Type": "application/json"
+              // La key ya va en la URL, pero la dejamos en header por si acaso
           },
           body: JSON.stringify({ file: fileId })
       });
@@ -84,7 +87,8 @@ export async function onRequest(context) {
       if (!linkRes.ok) {
           const errText = await linkRes.text();
           console.error(`Backend Error Google: ${errText}`);
-          throw new Error(`Google API Error (${linkRes.status}): ${errText}`);
+          // Devolvemos el error exacto de Google al frontend
+          throw new Error(`Google (${linkRes.status}): ${errText}`);
       }
 
       const data = await linkRes.json();
