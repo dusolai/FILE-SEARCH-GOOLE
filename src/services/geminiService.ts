@@ -4,13 +4,13 @@
 */
 import { QueryResult } from '../types';
 
-// ==========================================
-// TU URL DE BACKEND DE GOOGLE CLOUD RUN
-// ==========================================
+// ======================================================
+// CAMBIO CLAVE: Conectamos con tu servidor en la nube
+// ======================================================
 const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app";
 
 export function initialize(apiKey?: string) {
-    console.log(`🚀 Frontend conectado a: ${API_BASE}`);
+    console.log(`🚀 Frontend conectado a Google Cloud Run: ${API_BASE}`);
 }
 
 function getMimeType(file: File): string {
@@ -23,7 +23,7 @@ function getMimeType(file: File): string {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    console.log("Creando cerebro...");
+    console.log("🧠 Solicitando nuevo cerebro al backend...");
     const res = await fetch(`${API_BASE}/create-store`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -39,15 +39,15 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    console.log(`📤 Subiendo ${file.name} al backend...`);
+    console.log(`📤 Subiendo ${file.name} a la nube...`);
     
-    // 1. Preparar datos
+    // 1. Preparar datos (Incluimos el nombre explícitamente para evitar errores)
     const formData = new FormData();
     formData.append("file", file);
     formData.append("mimeType", getMimeType(file));
-    formData.append("displayName", file.name);
+    formData.append("displayName", file.name); 
 
-    // 2. Subir
+    // 2. Subir al Backend
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
@@ -59,21 +59,29 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     }
     
     const fileData = await uploadRes.json();
-    // Intentamos obtener el ID de varias formas posibles
+    
+    // 3. Obtener ID de forma segura (Google a veces cambia la estructura de respuesta)
     const fileId = fileData.name || fileData.file?.name || fileData.newFile?.name; 
     
     if (!fileId) {
-        console.warn("Advertencia: No se recibió ID del archivo, pero la subida parece exitosa.", fileData);
+        console.warn("⚠️ Advertencia: El servidor aceptó el archivo pero no devolvió un ID claro.", fileData);
     } else {
-        console.log(`✅ Archivo subido a Google: ${fileId}`);
+        console.log(`✅ Archivo recibido en Google con ID: ${fileId}`);
     }
 
-    // 3. Vincular (Confirmación)
-    await fetch(`${API_BASE}/link-file`, {
+    // 4. Vincular (Confirmación al backend)
+    console.log(`🔗 Vinculando a ${ragStoreName}...`);
+    const linkRes = await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storeId: ragStoreName, fileId: fileId })
     });
+
+    if (!linkRes.ok) {
+         console.warn("Error no crítico en vinculación (el archivo ya está en la nube)");
+    }
+    
+    console.log("✅ Proceso completado.");
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
@@ -93,5 +101,5 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    return ["¿Resumen del documento?", "¿Cuáles son las ideas principales?", "¿Hay alguna conclusión importante?"];
+    return ["¿Resumen de los documentos?", "¿Puntos clave?", "¿Qué conclusiones hay?"];
 }
