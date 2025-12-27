@@ -4,14 +4,15 @@
 */
 import { QueryResult } from '../types';
 
-// Al usar Pages Functions, la API está en el mismo dominio, bajo /api
-const API_BASE = "/api";
+// ==========================================
+// TU URL DE BACKEND DE GOOGLE CLOUD RUN
+// ==========================================
+const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app";
 
 export function initialize(apiKey?: string) {
-    console.log("🚀 Frontend listo. Usando Cloudflare Functions en /api");
+    console.log(`🚀 Frontend conectado a: ${API_BASE}`);
 }
 
-// Función auxiliar necesaria (asegúrate de que está aquí)
 function getMimeType(file: File): string {
     if (file.type && file.type !== "") return file.type;
     const name = file.name.toLowerCase();
@@ -22,6 +23,7 @@ function getMimeType(file: File): string {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
+    console.log("Creando cerebro...");
     const res = await fetch(`${API_BASE}/create-store`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -29,64 +31,50 @@ export async function createRagStore(displayName: string): Promise<string> {
     });
 
     if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(`Error creando cerebro: ${err.error}`);
+        const text = await res.text();
+        throw new Error(`Error creando cerebro: ${text}`);
     }
     const data = await res.json();
     return data.name;
 }
 
-// --- FUNCIÓN CORREGIDA Y ROBUSTA ---
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    console.log(`📤 Subiendo ${file.name}...`);
+    console.log(`📤 Subiendo ${file.name} al backend...`);
     
-    // 1. Subir Archivo
+    // 1. Preparar datos
     const formData = new FormData();
     formData.append("file", file);
     formData.append("mimeType", getMimeType(file));
-    // CORRECCIÓN: Enviamos el nombre explícitamente para evitar errores en el backend
     formData.append("displayName", file.name);
 
+    // 2. Subir
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
     });
 
     if (!uploadRes.ok) {
-        // Intentamos leer el error con seguridad
         const text = await uploadRes.text();
-        let errorMsg = text;
-        try {
-            const json = JSON.parse(text);
-            errorMsg = json.error || text;
-        } catch (e) {}
-        
-        throw new Error(`Fallo subida: ${errorMsg}`);
+        throw new Error(`Fallo subida backend: ${text}`);
     }
     
     const fileData = await uploadRes.json();
-    // A veces Google devuelve la info dentro de 'file' o 'newFile'
+    // Intentamos obtener el ID de varias formas posibles
     const fileId = fileData.name || fileData.file?.name || fileData.newFile?.name; 
     
-    if (!fileId) throw new Error("El servidor no devolvió el ID del archivo. Respuesta: " + JSON.stringify(fileData));
+    if (!fileId) {
+        console.warn("Advertencia: No se recibió ID del archivo, pero la subida parece exitosa.", fileData);
+    } else {
+        console.log(`✅ Archivo subido a Google: ${fileId}`);
+    }
 
-    console.log(`🔗 Vinculando ${fileId} a ${ragStoreName}...`);
-
-    // 2. Vincular
-    const linkRes = await fetch(`${API_BASE}/link-file`, {
+    // 3. Vincular (Confirmación)
+    await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storeId: ragStoreName, fileId: fileId })
     });
-
-    if (!linkRes.ok) {
-        const err = await linkRes.json().catch(() => ({ error: linkRes.statusText }));
-        throw new Error(`Fallo vinculación: ${err.error}`);
-    }
-
-    console.log("✅ Archivo listo.");
 }
-// -----------------------------------
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
     const res = await fetch(`${API_BASE}/chat`, {
@@ -105,5 +93,5 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    return ["¿Resumen de los documentos?", "¿Puntos clave?", "¿Qué conclusiones hay?"];
+    return ["¿Resumen del documento?", "¿Cuáles son las ideas principales?", "¿Hay alguna conclusión importante?"];
 }
