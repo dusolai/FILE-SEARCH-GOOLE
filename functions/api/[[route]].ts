@@ -8,7 +8,7 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // Headers CORS
+  // Headers CORS para permitir que tu frontend hable con el backend
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -20,7 +20,7 @@ export async function onRequest(context) {
   }
 
   if (!env.GEMINI_API_KEY) {
-    return new Response(JSON.stringify({ error: "Falta configuración GEMINI_API_KEY" }), { 
+    return new Response(JSON.stringify({ error: "Falta configuración GEMINI_API_KEY en .env.local" }), { 
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } 
     });
   }
@@ -36,6 +36,7 @@ export async function onRequest(context) {
           fileSearchStore: { displayName: displayName } 
       });
       
+      // Manejo robusto de la respuesta de Google
       const storeId = response.name || response.newFileSearchStore?.name || response.fileSearchStore?.name;
       
       return new Response(JSON.stringify({ name: storeId }), { 
@@ -43,15 +44,26 @@ export async function onRequest(context) {
       });
     }
 
-    // --- 2. SUBIR ARCHIVO ---
+    // --- 2. SUBIR ARCHIVO (CORREGIDO) ---
     if (url.pathname.endsWith("/upload") && request.method === "POST") {
       const formData = await request.formData();
       const file = formData.get("file");
       const mimeType = formData.get("mimeType");
+      // Leemos el nombre que enviamos explícitamente desde el frontend
+      const displayName = formData.get("displayName") || "archivo_sin_nombre.txt";
+
+      // VALIDACIÓN DE SEGURIDAD
+      if (!file) {
+        throw new Error("El archivo llegó vacío al servidor.");
+      }
 
       const uploadResponse = await ai.files.upload({
           file: file,
-          config: { displayName: file.name, mimeType: mimeType }
+          config: { 
+              // Usamos el nombre explícito para evitar el error 'reading name of undefined'
+              displayName: displayName.toString(), 
+              mimeType: mimeType ? mimeType.toString() : "text/plain" 
+          }
       });
 
       return new Response(JSON.stringify(uploadResponse), { 
@@ -59,36 +71,27 @@ export async function onRequest(context) {
       });
     }
 
-    // --- 3. VINCULAR ARCHIVO (REST API BLINDADA) ---
+    // --- 3. VINCULAR ARCHIVO ---
     if (url.pathname.endsWith("/link-file") && request.method === "POST") {
       const { storeId, fileId } = await request.json();
       
-      // 1. Limpieza de ID más segura (toma lo que hay después del último /)
       const storeIdParts = storeId.split("/");
       const cleanStoreId = storeIdParts[storeIdParts.length - 1].trim();
       
-      // 2. Espera de seguridad (Propagación)
+      // Espera técnica para dar tiempo a Google a procesar el archivo
       await new Promise(r => setTimeout(r, 2000));
 
-      // 3. URL con Key incluida para evitar errores de enrutado
       const linkUrl = `https://generativelanguage.googleapis.com/v1beta/fileSearchStores/${cleanStoreId}/files?key=${env.GEMINI_API_KEY}`;
-
-      console.log(`Backend: Vinculando ${fileId} en ${cleanStoreId}`);
 
       const linkRes = await fetch(linkUrl, {
           method: "POST",
-          headers: { 
-              "Content-Type": "application/json"
-              // La key ya va en la URL, pero la dejamos en header por si acaso
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ file: fileId })
       });
 
       if (!linkRes.ok) {
           const errText = await linkRes.text();
-          console.error(`Backend Error Google: ${errText}`);
-          // Devolvemos el error exacto de Google al frontend
-          throw new Error(`Google (${linkRes.status}): ${errText}`);
+          throw new Error(`Google Error (${linkRes.status}): ${errText}`);
       }
 
       const data = await linkRes.json();
@@ -116,7 +119,7 @@ export async function onRequest(context) {
 
     return new Response("Ruta no encontrada", { status: 404, headers: corsHeaders });
 
-  } catch (error) {
+  } catch (error: any) {
     return new Response(JSON.stringify({ error: error.message }), { 
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } 
     });
