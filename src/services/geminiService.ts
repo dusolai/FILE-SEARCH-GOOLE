@@ -1,9 +1,7 @@
 import { QueryResult } from '../types';
 
-// =================================================================
-// 🚀 URL DEL BACKEND (CÁMBIALA SI CAMBIA TU CLOUD RUN)
-// =================================================================
-const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app"; 
+// URL DE TU BACKEND
+const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app";
 
 export function initialize() {
     console.log(`🚀 Conectado a: ${API_BASE}`);
@@ -14,25 +12,22 @@ function getMimeType(file: File): string {
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    // El backend ahora acepta 'name' o 'displayName', enviamos displayName
     const res = await fetch(`${API_BASE}/create-store`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ displayName })
     });
-
-    if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    return data.name; // El backend devuelve { name: "store-..." }
+    return data.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    console.log(`📤 Procesando ${file.name}...`);
+    console.log(`📤 Subiendo ${file.name}...`);
     
     const formData = new FormData();
     formData.append("file", file);
-
-    // PASO 1: Subir y EXTRAER texto
+    
+    // 1. Subir y Extraer
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
@@ -43,14 +38,12 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     const uploadData = await uploadRes.json();
     const text = uploadData.file.extractedText;
 
-    if (!text || text.length < 10) {
-        throw new Error("El archivo parece estar vacío o no se pudo leer el texto.");
-    }
-    
-    console.log(`✅ Texto extraído: ${text.length} caracteres`);
-    
-    // PASO 2: Guardar en la memoria del servidor
-    await fetch(`${API_BASE}/link-file`, {
+    if (!text) throw new Error("No se pudo extraer texto del archivo.");
+
+    console.log(`✅ Texto extraído: ${text.length} chars`);
+
+    // 2. Guardar en memoria (Ahora es seguro contra reinicios)
+    const linkRes = await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -59,8 +52,14 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             extractedText: text 
         })
     });
+
+    if (!linkRes.ok) {
+        // Si aún así falla, mostramos el error real
+        console.error("Link Error:", await linkRes.text());
+        throw new Error("Error vinculando archivo.");
+    }
     
-    console.log("🔗 Archivo vinculado a la memoria.");
+    console.log("🔗 Archivo guardado correctamente.");
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
@@ -70,16 +69,15 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
         body: JSON.stringify({ storeId: ragStoreName, query })
     });
 
-    if (!res.ok) return { text: "Error comunicando con el servidor.", groundingChunks: [] };
+    if (!res.ok) return { text: "Error de conexión.", groundingChunks: [] };
     
     const data = await res.json();
-    // El backend ahora devuelve { text: "..." }
     return {
-        text: data.text || data.response || "Sin respuesta.",
+        text: data.text || "Sin respuesta.",
         groundingChunks: []
     };
 }
 
 export async function generateExampleQuestions(): Promise<string[]> {
-    return ["¿Resumen del documento?", "¿Puntos clave?", "¿De qué trata?"];
+    return ["¿Resumen?", "¿Ideas clave?", "¿Conclusiones?"];
 }
