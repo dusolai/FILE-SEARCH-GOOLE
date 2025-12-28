@@ -7,6 +7,7 @@ import { QueryResult } from '../types';
 // =================================================================
 // 🚀 CONEXIÓN CON EL CEREBRO EN LA NUBE
 // =================================================================
+// Tu URL de Google Cloud Run
 const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app";
 
 export function initialize(apiKey?: string) {
@@ -31,19 +32,21 @@ export async function createRagStore(displayName: string): Promise<string> {
 
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    console.log(`📦 Store creado: ${data.name}`);
+    console.log(`📦 Store simulado creado: ${data.name}`);
     return data.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     console.log(`📤 Enviando ${file.name} a Google Cloud Run...`);
     
+    // 1. Preparar el formulario
     const formData = new FormData();
     formData.append("file", file);
     formData.append("mimeType", getMimeType(file));
     formData.append("displayName", file.name);
 
-    // PASO 1: Subir archivo y extraer texto
+    // 2. Subir al Backend
+    // IMPORTANTE: No ponemos cabeceras manuales para que el navegador gestione el Multipart
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
@@ -55,33 +58,29 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         throw new Error(`Error subiendo archivo: ${errorText}`);
     }
     
-    const uploadData = await uploadRes.json();
-    console.log("✅ Archivo recibido:", uploadData.file.uri);
-    console.log(`📄 Texto extraído: ${uploadData.file.extractedText?.length || 0} chars`);
+    // 3. Procesar respuesta
+    const fileData = await uploadRes.json();
+    // Google devuelve 'name' (resource name) y 'uri'. Usamos 'name' como ID.
+    const fileId = fileData.name || fileData.uri; 
     
-    // PASO 2: Vincular archivo Y texto al store
-    const linkRes = await fetch(`${API_BASE}/link-file`, {
+    console.log(`✅ Archivo recibido en Google: ${fileId}`);
+    
+    // 4. Vincular (Confirmación al backend)
+    await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
             storeId: ragStoreName, 
-            fileUri: uploadData.file.uri,
-            fileName: file.name,
-            extractedText: uploadData.file.extractedText // ← NUEVO
+            fileId: fileId,
+            fileName: file.name
         })
     });
     
-    if (!linkRes.ok) {
-        console.error("⚠️ Error vinculando");
-    } else {
-        const linkData = await linkRes.json();
-        console.log(`🔗 Vinculado. Total: ${linkData.filesInStore}`);
-    }
+    console.log("🔗 Archivo vinculado correctamente.");
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
-    console.log(`🔍 Buscando en cerebro: ${ragStoreName}`);
-    console.log(`   Query: "${query}"`);
+    console.log(`🔍 Buscando: "${query}"`);
     
     const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
@@ -90,15 +89,11 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
     });
 
     if (!res.ok) {
-        console.error("❌ Error en /chat:", await res.text());
-        return { text: "Error de conexión con el cerebro.", groundingChunks: [] };
+        console.error("❌ Error en chat");
+        return { text: "Error comunicando con el cerebro.", groundingChunks: [] };
     }
     
     const data = await res.json();
-    
-    console.log(`✅ Respuesta recibida (RAG: ${data.usedRAG ? 'SÍ' : 'NO'})`);
-    if (data.warning) console.warn(`⚠️ ${data.warning}`);
-    
     return {
         text: data.text,
         groundingChunks: data.groundingChunks || []
@@ -106,5 +101,5 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    return ["¿Qué dice el documento?", "¿Resumen breve?", "¿Ideas principales?"];
+    return ["¿De qué trata el documento?", "¿Resumen breve?", "¿Conclusiones principales?"];
 }
