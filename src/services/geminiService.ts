@@ -7,7 +7,6 @@ import { QueryResult } from '../types';
 // =================================================================
 // 🚀 CONEXIÓN CON EL CEREBRO EN LA NUBE
 // =================================================================
-// Asegúrate de que esta URL sea la de tu Cloud Run (sin barra al final)
 const API_BASE = "https://backend-cerebro-987192214624.europe-southwest1.run.app";
 
 export function initialize(apiKey?: string) {
@@ -43,6 +42,8 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     formData.append("mimeType", getMimeType(file));
     formData.append("displayName", file.name);
 
+    // OJO: No añadimos 'headers' manuales aquí.
+    // Dejamos que el navegador configure 'multipart/form-data' automáticamente.
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
@@ -50,12 +51,14 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!uploadRes.ok) {
         const errorText = await uploadRes.text();
-        throw new Error(`Error del servidor: ${errorText}`);
+        // Si hay error, lo mostramos en consola para depurar
+        console.error("❌ Error Backend:", errorText);
+        throw new Error(`Error subiendo archivo: ${errorText}`);
     }
     
-    console.log("✅ Archivo recibido y procesado en la nube.");
+    console.log("✅ Archivo recibido en la nube.");
     
-    // Paso de confirmación simple
+    // Paso de confirmación
     await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
