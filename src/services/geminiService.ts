@@ -43,7 +43,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     formData.append("mimeType", getMimeType(file));
     formData.append("displayName", file.name);
 
-    // PASO 1: Subir archivo a Gemini
+    // PASO 1: Subir archivo y extraer texto
     const uploadRes = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData
@@ -56,24 +56,26 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     }
     
     const uploadData = await uploadRes.json();
-    console.log("✅ Archivo recibido en la nube:", uploadData.file.uri);
+    console.log("✅ Archivo recibido:", uploadData.file.uri);
+    console.log(`📄 Texto extraído: ${uploadData.file.extractedText?.length || 0} chars`);
     
-    // PASO 2: Vincular archivo al store (CRÍTICO para RAG)
+    // PASO 2: Vincular archivo Y texto al store
     const linkRes = await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
             storeId: ragStoreName, 
             fileUri: uploadData.file.uri,
-            fileName: file.name
+            fileName: file.name,
+            extractedText: uploadData.file.extractedText // ← NUEVO
         })
     });
     
     if (!linkRes.ok) {
-        console.error("⚠️ Error vinculando archivo al store");
+        console.error("⚠️ Error vinculando");
     } else {
         const linkData = await linkRes.json();
-        console.log(`🔗 Archivo vinculado. Archivos totales en store: ${linkData.filesInStore}`);
+        console.log(`🔗 Vinculado. Total: ${linkData.filesInStore}`);
     }
 }
 
