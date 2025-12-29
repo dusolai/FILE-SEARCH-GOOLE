@@ -13,12 +13,12 @@ const App: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState<any>(null);
     
-    // --- PERSISTENCIA DE SESIÓN ---
+    // --- PERSISTENCIA: RECUPERAR DATOS AL RECARGAR ---
     const [activeRagStoreName, setActiveRagStoreName] = useState<string | null>(
         localStorage.getItem('master_rag_store_id')
     );
     
-    // --- PERSISTENCIA DE CHAT (NUEVO) ---
+    // Recuperamos el chat guardado, si existe
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>(() => {
         const saved = localStorage.getItem('chat_history');
         return saved ? JSON.parse(saved) : [];
@@ -28,102 +28,188 @@ const App: React.FC = () => {
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
     const [documentName, setDocumentName] = useState<string>('Memoria Maestra');
     const [files, setFiles] = useState<File[]>([]);
+    const ragStoreNameRef = useRef(activeRagStoreName);
 
-    // Guardar Chat cada vez que cambia
+    // 1. GUARDAR CHAT AUTOMÁTICAMENTE CADA VEZ QUE HABLES
     useEffect(() => {
         localStorage.setItem('chat_history', JSON.stringify(chatHistory));
     }, [chatHistory]);
 
-    // Guardar ID del Store
-    useEffect(() => {
-        if (activeRagStoreName) {
-            localStorage.setItem('master_rag_store_id', activeRagStoreName);
-            // Si hay ID y Chat guardado, vamos directo al chat
-            if (chatHistory.length > 0 && status === AppStatus.Initializing) {
-                setStatus(AppStatus.Chatting);
-            }
-        }
-    }, [activeRagStoreName, chatHistory, status]);
-
-    // Cargar API Key
+    // 2. INICIO INTELIGENTE
     useEffect(() => {
         const savedKey = localStorage.getItem('gemini_api_key');
         if (savedKey) {
             geminiService.initialize(savedKey);
             setIsApiKeySelected(true);
         }
-        // Si no hemos saltado al chat ya, vamos a Welcome
-        if (status === AppStatus.Initializing && (!activeRagStoreName || chatHistory.length === 0)) {
+
+        // ¡AQUÍ ESTÁ LA MAGIA!
+        // Si ya tenemos un cerebro y un historial, saltamos directo al chat
+        if (activeRagStoreName && chatHistory.length > 0) {
+            setStatus(AppStatus.Chatting);
+        } else {
             setStatus(AppStatus.Welcome);
         }
-    }, [status, activeRagStoreName, chatHistory.length]);
+    }, []); 
+
+    // 3. GUARDAR ID DEL CEREBRO
+    useEffect(() => {
+        ragStoreNameRef.current = activeRagStoreName;
+        if (activeRagStoreName) {
+            localStorage.setItem('master_rag_store_id', activeRagStoreName);
+        }
+    }, [activeRagStoreName]);
 
     const handleApiKeySet = (key: string) => {
-        localStorage.setItem('gemini_api_key', key);
-        geminiService.initialize(key);
-        setIsApiKeySelected(true);
+        try {
+            const cleanKey = key.trim();
+            if (!cleanKey.startsWith("AIza")) throw new Error("La clave debe empezar por 'AIza'");
+            localStorage.setItem('gemini_api_key', cleanKey);
+            geminiService.initialize(cleanKey);
+            setIsApiKeySelected(true);
+            setApiKeyError(null);
+        } catch (e: any) {
+            setApiKeyError(e.message);
+        }
     };
 
+    const handleError = (message: string, err: any) => {
+        console.error("🔥 APP ERROR:", message, err);
+        const detail = err instanceof Error ? err.message : JSON.stringify(err);
+        setError(`${message} -> ${detail}`);
+        setStatus(AppStatus.Error);
+    };
+
+    const clearError = () => {
+        setError(null);
+        setStatus(AppStatus.Welcome);
+    }
+
     const handleUploadAndStartChat = async () => {
-        if (!isApiKeySelected) return setApiKeyError("Falta API Key");
+        if (!isApiKeySelected) {
+            setApiKeyError("⚠️ Falta la API Key.");
+            return;
+        }
+        if (files.length === 0) return;
+        
         setStatus(AppStatus.Uploading);
 
         try {
+            const savedKey = localStorage.getItem('gemini_api_key');
+            if (savedKey) geminiService.initialize(savedKey);
+
             let storeName = activeRagStoreName;
+
+            // Si no hay cerebro activo, creamos uno nuevo
             if (!storeName) {
-                const nuevoId = `cerebro_${Date.now()}`;
+                setUploadProgress({ current: 0, total: files.length + 1, message: "Creando Cerebro en Google..." });
+                const nuevoId = `CEREBRO_DIEGO_${Date.now()}`;
                 storeName = await geminiService.createRagStore(nuevoId);
                 setActiveRagStoreName(storeName);
             }
 
+            const totalSteps = files.length + 1;
+
             for (let i = 0; i < files.length; i++) {
-                setUploadProgress({ current: i + 1, total: files.length, message: `Subiendo ${files[i].name}...` });
+                setUploadProgress({ 
+                    current: i + 1, 
+                    total: totalSteps, 
+                    message: `Procesando ${files[i].name}...`, 
+                    fileName: files[i].name 
+                });
                 await geminiService.uploadToRagStore(storeName, files[i]);
             }
             
+            setUploadProgress({ current: totalSteps, total: totalSteps, message: "Finalizando..." });
+            
+            setDocumentName("Cerebro Diego V1");
             setStatus(AppStatus.Chatting);
             setFiles([]); 
-        } catch (err: any) {
-            setError(err.message);
-            setStatus(AppStatus.Error);
+        } catch (err) {
+            handleError("Error durante la creación de la memoria.", err);
         } finally {
             setUploadProgress(null);
         }
     };
 
     const handleEndChat = () => {
-        if (window.confirm("¿Seguro? Esto borrará el historial visual (la memoria del cerebro sigue intacta).")) {
+        if (window.confirm("¿Seguro? Esto borrará el historial de pantalla.")) {
             setChatHistory([]);
             localStorage.removeItem('chat_history');
-            // Opcional: localStorage.removeItem('master_rag_store_id');
-            // Opcional: setActiveRagStoreName(null);
+            // Mantenemos el ID del cerebro para no perder la conexión con Firebase
             setStatus(AppStatus.Welcome);
         }
     };
 
     const handleSendMessage = async (message: string) => {
         if (!activeRagStoreName) return;
-        const userMsg: ChatMessage = { role: 'user', parts: [{ text: message }] };
-        setChatHistory(prev => [...prev, userMsg]);
+
+        const userMessage: ChatMessage = { role: 'user', parts: [{ text: message }] };
+        setChatHistory(prev => [...prev, userMessage]);
         setIsQueryLoading(true);
 
         try {
             const result = await geminiService.fileSearch(activeRagStoreName, message);
-            setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: result.text }] }]);
+            
+            const modelMessage: ChatMessage = {
+                role: 'model',
+                parts: [{ text: result.text }],
+                groundingChunks: result.groundingChunks
+            };
+            setChatHistory(prev => [...prev, modelMessage]);
         } catch (err) {
             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: "Error de conexión." }] }]);
         } finally {
             setIsQueryLoading(false);
         }
     };
+    
+    // RENDER
+    const renderContent = () => {
+        switch(status) {
+            case AppStatus.Initializing:
+                return <div className="flex h-screen items-center justify-center bg-gray-900 text-white"><Spinner /> Cargando Cerebro...</div>;
+            case AppStatus.Welcome:
+                 return <WelcomeScreen 
+                        onUpload={handleUploadAndStartChat} 
+                        apiKeyError={apiKeyError} 
+                        files={files} 
+                        setFiles={setFiles} 
+                        isApiKeySelected={isApiKeySelected} 
+                        onApiKeySet={handleApiKeySet} 
+                    />;
+            case AppStatus.Uploading:
+                return <ProgressBar 
+                    progress={uploadProgress?.current || 0} 
+                    total={uploadProgress?.total || 1} 
+                    message={uploadProgress?.message || "Iniciando..."} 
+                    fileName={uploadProgress?.fileName}
+                />;
+            case AppStatus.Chatting:
+                return <ChatInterface 
+                    documentName={documentName}
+                    history={chatHistory}
+                    isQueryLoading={isQueryLoading}
+                    onSendMessage={handleSendMessage}
+                    onNewChat={handleEndChat}
+                    exampleQuestions={exampleQuestions}
+                    ragStoreId={activeRagStoreName || ''} 
+                />;
+            case AppStatus.Error:
+                 return (
+                    <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-red-500 p-8 text-center">
+                        <h1 className="text-3xl font-bold mb-4">Error Crítico</h1>
+                        <div className="bg-black/30 p-4 rounded text-left mb-6 max-w-2xl overflow-auto max-h-40 font-mono text-sm border border-red-800">
+                            {error}
+                        </div>
+                        <button onClick={clearError} className="px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-500">Volver a intentar</button>
+                    </div>
+                );
+            default: return null;
+        }
+    }
 
-    // Renderizado simplificado para brevedad
-    if (status === AppStatus.Initializing) return <div className="h-screen bg-gray-900 flex items-center justify-center text-white"><Spinner /></div>;
-    if (status === AppStatus.Error) return <div className="h-screen bg-gray-900 flex flex-col items-center justify-center text-red-500"><p>{error}</p><button onClick={() => setStatus(AppStatus.Welcome)} className="mt-4 bg-blue-600 text-white p-2 rounded">Reintentar</button></div>;
-    if (status === AppStatus.Chatting) return <ChatInterface documentName={documentName} history={chatHistory} isQueryLoading={isQueryLoading} onSendMessage={handleSendMessage} onNewChat={handleEndChat} exampleQuestions={exampleQuestions} ragStoreId={activeRagStoreName || ''} />;
-    if (status === AppStatus.Uploading) return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 100} message={uploadProgress?.message || "Cargando..."} />;
-
-    return <WelcomeScreen onUpload={handleUploadAndStartChat} apiKeyError={apiKeyError} files={files} setFiles={setFiles} isApiKeySelected={isApiKeySelected} onApiKeySet={handleApiKeySet} />;
+    return <main className="h-screen bg-gray-900 text-white font-sans">{renderContent()}</main>;
 };
 
 export default App;
