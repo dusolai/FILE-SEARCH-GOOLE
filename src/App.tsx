@@ -13,12 +13,11 @@ const App: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState<any>(null);
     
-    // --- PERSISTENCIA: RECUPERAR DATOS AL RECARGAR ---
+    // --- PERSISTENCIA ---
     const [activeRagStoreName, setActiveRagStoreName] = useState<string | null>(
         localStorage.getItem('master_rag_store_id')
     );
     
-    // Recuperamos el chat guardado, si existe
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>(() => {
         const saved = localStorage.getItem('chat_history');
         return saved ? JSON.parse(saved) : [];
@@ -30,12 +29,12 @@ const App: React.FC = () => {
     const [files, setFiles] = useState<File[]>([]);
     const ragStoreNameRef = useRef(activeRagStoreName);
 
-    // 1. GUARDAR CHAT AUTOMÁTICAMENTE CADA VEZ QUE HABLES
+    // Guardar historial al cambiar
     useEffect(() => {
         localStorage.setItem('chat_history', JSON.stringify(chatHistory));
     }, [chatHistory]);
 
-    // 2. INICIO INTELIGENTE
+    // INICIO: LÓGICA CORREGIDA
     useEffect(() => {
         const savedKey = localStorage.getItem('gemini_api_key');
         if (savedKey) {
@@ -43,16 +42,18 @@ const App: React.FC = () => {
             setIsApiKeySelected(true);
         }
 
-        // ¡AQUÍ ESTÁ LA MAGIA!
-        // Si ya tenemos un cerebro y un historial, saltamos directo al chat
-        if (activeRagStoreName && chatHistory.length > 0) {
+        // --- CORRECCIÓN CLAVE AQUÍ ---
+        // Antes exigíamos (store && history.length > 0).
+        // Ahora solo exigimos (store). Si tienes cerebro, vas al chat.
+        if (activeRagStoreName) {
+            console.log("Cerebro detectado, restaurando sesión...");
             setStatus(AppStatus.Chatting);
         } else {
             setStatus(AppStatus.Welcome);
         }
     }, []); 
 
-    // 3. GUARDAR ID DEL CEREBRO
+    // Guardar ID del Store
     useEffect(() => {
         ragStoreNameRef.current = activeRagStoreName;
         if (activeRagStoreName) {
@@ -74,7 +75,7 @@ const App: React.FC = () => {
     };
 
     const handleError = (message: string, err: any) => {
-        console.error("🔥 APP ERROR:", message, err);
+        console.error("APP ERROR:", message, err);
         const detail = err instanceof Error ? err.message : JSON.stringify(err);
         setError(`${message} -> ${detail}`);
         setStatus(AppStatus.Error);
@@ -100,9 +101,8 @@ const App: React.FC = () => {
 
             let storeName = activeRagStoreName;
 
-            // Si no hay cerebro activo, creamos uno nuevo
             if (!storeName) {
-                setUploadProgress({ current: 0, total: files.length + 1, message: "Creando Cerebro en Google..." });
+                setUploadProgress({ current: 0, total: files.length + 1, message: "Creando Cerebro..." });
                 const nuevoId = `CEREBRO_DIEGO_${Date.now()}`;
                 storeName = await geminiService.createRagStore(nuevoId);
                 setActiveRagStoreName(storeName);
@@ -114,7 +114,7 @@ const App: React.FC = () => {
                 setUploadProgress({ 
                     current: i + 1, 
                     total: totalSteps, 
-                    message: `Procesando ${files[i].name}...`, 
+                    message: `Subiendo ${files[i].name}...`, 
                     fileName: files[i].name 
                 });
                 await geminiService.uploadToRagStore(storeName, files[i]);
@@ -126,17 +126,18 @@ const App: React.FC = () => {
             setStatus(AppStatus.Chatting);
             setFiles([]); 
         } catch (err) {
-            handleError("Error durante la creación de la memoria.", err);
+            handleError("Error creando memoria", err);
         } finally {
             setUploadProgress(null);
         }
     };
 
     const handleEndChat = () => {
-        if (window.confirm("¿Seguro? Esto borrará el historial de pantalla.")) {
+        if (window.confirm("¿Borrar memoria local? (La del servidor sigue existiendo)")) {
             setChatHistory([]);
+            setActiveRagStoreName(null);
             localStorage.removeItem('chat_history');
-            // Mantenemos el ID del cerebro para no perder la conexión con Firebase
+            localStorage.removeItem('master_rag_store_id');
             setStatus(AppStatus.Welcome);
         }
     };
@@ -150,7 +151,6 @@ const App: React.FC = () => {
 
         try {
             const result = await geminiService.fileSearch(activeRagStoreName, message);
-            
             const modelMessage: ChatMessage = {
                 role: 'model',
                 parts: [{ text: result.text }],
@@ -168,7 +168,7 @@ const App: React.FC = () => {
     const renderContent = () => {
         switch(status) {
             case AppStatus.Initializing:
-                return <div className="flex h-screen items-center justify-center bg-gray-900 text-white"><Spinner /> Cargando Cerebro...</div>;
+                return <div className="flex h-screen items-center justify-center bg-gray-900 text-white"><Spinner /> Cargando...</div>;
             case AppStatus.Welcome:
                  return <WelcomeScreen 
                         onUpload={handleUploadAndStartChat} 
@@ -202,7 +202,7 @@ const App: React.FC = () => {
                         <div className="bg-black/30 p-4 rounded text-left mb-6 max-w-2xl overflow-auto max-h-40 font-mono text-sm border border-red-800">
                             {error}
                         </div>
-                        <button onClick={clearError} className="px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-500">Volver a intentar</button>
+                        <button onClick={clearError} className="px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-500">Reintentar</button>
                     </div>
                 );
             default: return null;
