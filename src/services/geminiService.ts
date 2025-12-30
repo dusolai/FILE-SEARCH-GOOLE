@@ -20,67 +20,121 @@ export async function createRagStore(displayName: string): Promise<string> {
         const res = await fetch(`${API_BASE}/create-store`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ displayName })
+            body: JSON.stringify({ name: displayName })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         return data.name;
     } catch (error: any) {
+        console.error("Error creando store:", error);
         return `store-fallback-${Date.now()}`;
     }
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    console.log(`📤 Procesando ${file.name}...`);
+    console.log(`📤 Subiendo ${file.name}...`);
+    
+    // 1. Subir archivo al backend para procesamiento (chunking + embeddings)
     const formData = new FormData();
     formData.append("file", file);
     formData.append("mimeType", getMimeType(file));
     formData.append("displayName", file.name);
 
-    const uploadRes = await fetch(`${API_BASE}/upload`, { method: "POST", body: formData });
-    if (!uploadRes.ok) throw new Error(await uploadRes.text());
+    console.log(`⚙️ Procesando con chunking y embeddings...`);
+    
+    const uploadRes = await fetch(`${API_BASE}/upload`, { 
+        method: "POST", 
+        body: formData 
+    });
+    
+    if (!uploadRes.ok) {
+        const errorText = await uploadRes.text();
+        throw new Error(`Error en upload: ${errorText}`);
+    }
     
     const uploadData = await uploadRes.json();
-    const text = uploadData.file.extractedText;
+    
+    if (!uploadData.file || !uploadData.file.chunks) {
+        throw new Error("El backend no devolvió chunks válidos");
+    }
+    
+    console.log(`✅ Generados ${uploadData.file.chunkCount} chunks con embeddings`);
 
+    // 2. Vincular los chunks al store
+    console.log(`🔗 Vinculando al cerebro ${ragStoreName}...`);
+    
     const linkRes = await fetch(`${API_BASE}/link-file`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
             storeId: ragStoreName, 
             fileName: file.name,
-            extractedText: text,
-            googleData: uploadData.file.googleData // Enviamos los datos nativos de Google
+            chunks: uploadData.file.chunks // Chunks con embeddings
         })
     });
-    if (!linkRes.ok) throw new Error("Error guardando archivo.");
+    
+    if (!linkRes.ok) {
+        const errorText = await linkRes.text();
+        throw new Error(`Error en link-file: ${errorText}`);
+    }
+    
+    // Esperar un poco para asegurar que el backend terminó el guardado asíncrono
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    console.log(`💾 ${file.name} vinculado correctamente`);
 }
 
 export async function fileSearch(ragStoreName: string, query: string): Promise<QueryResult> {
     try {
+        console.log(`🔍 Buscando: "${query}"`);
+        
         const res = await fetch(`${API_BASE}/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ storeId: ragStoreName, query })
         });
+        
         if (!res.ok) {
+            console.error("Error en chat:", res.status);
             return { text: "Error comunicando con el servidor.", groundingChunks: [] };
         }
+        
         const data = await res.json();
+        
+        console.log(`✅ Respuesta recibida (${data.text?.length || 0} chars)`);
+        
+        if (data.debug) {
+            console.log(`📊 Debug:`, data.debug);
+        }
+        
+        if (data.sources) {
+            console.log(`📚 Fuentes: ${data.sources.length}`);
+            data.sources.forEach((src: any, i: number) => {
+                console.log(`  ${i + 1}. ${src.fileName} (Score: ${src.score})`);
+            });
+        }
+        
         return {
             text: data.text || "Sin respuesta.",
-            groundingChunks: data.groundingChunks || []
+            groundingChunks: data.sources?.map((src: any) => ({
+                retrievedContext: {
+                    text: `[${src.fileName}, Chunk ${src.chunkIndex}] ${src.preview}`
+                }
+            })) || []
         };
     } catch (error: any) {
+        console.error("Error en fileSearch:", error);
         return { text: "Error de conexión.", groundingChunks: [] };
     }
 }
 
-// NUEVO: Obtener lista de archivos
 export async function listFiles(ragStoreName: string): Promise<string[]> {
     try {
         const res = await fetch(`${API_BASE}/files?storeId=${ragStoreName}`);
-        if (!res.ok) return [];
+        if (!res.ok) {
+            console.error("Error listando archivos:", res.status);
+            return [];
+        }
         const data = await res.json();
         return data.files || [];
     } catch (e) {
